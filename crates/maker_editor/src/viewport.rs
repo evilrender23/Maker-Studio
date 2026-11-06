@@ -55,16 +55,18 @@ fn toolbar(ed: &mut Editor, ui: &mut egui::Ui) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let s = ed.renderer.stats;
             let fps = if ed.frame_times.is_empty() { 0.0 } else { ed.frame_times.len() as f32 / ed.frame_times.iter().sum::<f32>().max(1e-4) };
-            ui.label(
-                egui::RichText::new(format!(
-                    "{fps:.0} fps · {} draw calls · {} k tris · {} entidades",
-                    s.draw_calls,
-                    s.triangles / 1000,
-                    ed.scene.len()
-                ))
-                .small()
-                .color(theme::TEXT3),
-            );
+            // La versión más larga que quepa sin pisar los botones de la izquierda.
+            let variantes = [
+                format!("{fps:.0} fps · {} draw calls · {} k tris · {} entidades", s.draw_calls, s.triangles / 1000, ed.scene.len()),
+                format!("{fps:.0} fps · {} draw calls · {} k tris", s.draw_calls, s.triangles / 1000),
+                format!("{fps:.0} fps"),
+            ];
+            let fuente = egui::TextStyle::Small.resolve(ui.style());
+            let hueco = ui.available_width() - 8.0;
+            let ancho = |t: &str| ui.fonts_mut(|f| f.layout_no_wrap(t.to_owned(), fuente.clone(), theme::TEXT3).size().x);
+            if let Some(t) = variantes.iter().find(|t| ancho(t) <= hueco) {
+                ui.label(egui::RichText::new(t).small().color(theme::TEXT3));
+            }
         });
     });
 }

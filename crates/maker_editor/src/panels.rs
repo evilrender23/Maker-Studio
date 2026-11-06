@@ -903,7 +903,6 @@ fn scripts(ed: &mut Editor, ui: &mut Ui, id: EntityId) {
 
 fn environment(ed: &mut Editor, ui: &mut Ui) {
     ui.label(RichText::new("Entorno de la escena").strong());
-    ui.label(RichText::new("Nada seleccionado: ajustes globales de la escena (cielo, niebla, gravedad).").small().color(theme::TEXT3));
     ui.add_space(4.0);
     let mut env = ed.scene.env;
     egui::Grid::new("env-grid").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
@@ -1034,9 +1033,6 @@ fn content(ed: &mut Editor, ui: &mut Ui) {
                 r.on_hover_text("Doble clic para abrir (guarda la actual)");
             }
             section_label(&mut cols[1], "Modelos");
-            if models.is_empty() {
-                cols[1].label(RichText::new("Arrastra aquí .gltf/.glb con «Importar modelo»").small().color(theme::TEXT3));
-            }
             for m in &models {
                 let r = cols[1].add(egui::Button::new(format!("◈ {m}")).frame(false).sense(egui::Sense::click_and_drag()));
                 if r.drag_started() {

@@ -1,5 +1,6 @@
 //! Maker Studio — editor 3D. MIT © EvilRender23.
 
+mod agente;
 mod app;
 mod camera;
 mod code;
@@ -9,6 +10,7 @@ mod hub;
 mod panels;
 mod icons;
 mod pixel_icons;
+mod prefs;
 mod theme;
 mod titlebar;
 mod update;
@@ -31,6 +33,14 @@ const USAGE: &str = "Uso: maker-studio [PROYECTO] [opciones]
   --gizmo move|rotate|scale
   --size ANCHOxALTO        tamaño de ventana
   --export                 exporta el juego a PROYECTO/export/ y sale
+  --prefs                  abre la ventana de Preferencias
+  --agent-prompt TEXTO     activa el modo agente, envía TEXTO y captura al terminar el turno
+  --agent-cli claude|codex|agy
+  --agent-model MODELO     --agent-effort NIVEL     --agent-perm read|edit|full
+  --agent-chips escena,seleccion,script,errores
+  --agent-continue         sigue la sesión más reciente (reanuda la conversación nativa)
+  --agent-compact          compacta la conversación después del turno
+  --agent-panel            muestra el panel del agente sin enviar nada
   --actualizar             busca y compila la última versión de GitHub (copias instaladas)
   --version                commit y rama de esta copia
 ";
@@ -95,6 +105,16 @@ fn main() -> eframe::Result<()> {
             "--hold" => auto.hold.extend(args.next().as_deref().and_then(parse_key)),
             "--open-script" => auto.open_script = true,
             "--export" => auto.export = true,
+            "--prefs" => auto.prefs = true,
+            "--agent-prompt" => auto.agent.prompt = args.next(),
+            "--agent-cli" => auto.agent.cli = args.next(),
+            "--agent-model" => auto.agent.model = args.next(),
+            "--agent-effort" => auto.agent.effort = args.next(),
+            "--agent-perm" => auto.agent.perm = args.next(),
+            "--agent-chips" => auto.agent.chips = args.next(),
+            "--agent-continue" => auto.agent.continuar = true,
+            "--agent-compact" => auto.agent.compact = true,
+            "--agent-panel" => auto.agent.panel = true,
             "--tab" => {
                 auto.tab = match args.next().as_deref() {
                     Some("console") => Some(editor::BottomTab::Console),

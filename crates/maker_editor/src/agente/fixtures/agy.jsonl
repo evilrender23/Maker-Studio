@@ -1,0 +1,5 @@
+{"event":"init","conversation_id":"f204220f-58d7-4183-8f18-2b410d19a5de","init":{"cwd":"/proyecto/w","tools":["ask_custom_permission","ask_permission","ask_question"],"permission_mode":"request-review"}}
+{"event":"step_update","step_update":{"conversation_id":"f204220f-58d7-4183-8f18-2b410d19a5de","step_index":0,"state":"DONE","step_type":"user_input"}}
+{"event":"step_update","step_update":{"conversation_id":"f204220f-58d7-4183-8f18-2b410d19a5de","step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"hola"}}
+{"event":"step_update","step_update":{"conversation_id":"f204220f-58d7-4183-8f18-2b410d19a5de","step_index":1,"state":"DONE","step_type":"agent_response","text_delta":"\n","duration_seconds":83.31749989,"usage":{"input_tokens":6940,"output_tokens":127,"thinking_tokens":126,"cache_read_tokens":0,"total_tokens":7067}}}
+{"event":"result","result":{"conversation_id":"f204220f-58d7-4183-8f18-2b410d19a5de","status":"SUCCESS","response":"hola\n","duration_seconds":83.343384296,"num_turns":1,"usage":{"input_tokens":6940,"output_tokens":127,"thinking_tokens":126,"cache_read_tokens":0,"total_tokens":7067}}}

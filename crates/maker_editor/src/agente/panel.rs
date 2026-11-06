@@ -193,7 +193,7 @@ fn entrada(ag: &mut Agente, ed: &mut Editor, prefs: &Preferencias, ui: &mut Ui) 
     let pista = format!("Mensaje para {}", ag.sesion().backend.nombre());
     let r = ui.add_enabled(
         !ocupado,
-        egui::TextEdit::multiline(&mut ag.entrada).desired_rows(3).desired_width(f32::INFINITY).return_key(shift_enter).hint_text(pista),
+        egui::TextEdit::multiline(&mut ag.entrada).id(ui.make_persistent_id("agente-texto")).desired_rows(3).desired_width(f32::INFINITY).return_key(shift_enter).hint_text(pista),
     );
     let mut enviar = r.has_focus() && enviar_tecla;
     // Soltar en el cuadro de texto un modelo de Contenido o de la Biblioteca.
@@ -414,87 +414,189 @@ fn linea_rica(ui: &mut Ui, t: &str) {
     ui.add(egui::Label::new(job).wrap());
 }
 
-/// Adjuntos del próximo mensaje: los añadidos, «Adjuntar», archivos soltados sobre el panel e
-/// imágenes pegadas con Ctrl+V.
+/// Adjuntos del próximo mensaje: miniaturas de las imágenes y etiquetas del resto, botones de
+/// Imagen (selector nativo), Pegar (portapapeles), Captura (del visor) y Archivo; además se aceptan
+/// archivos soltados sobre el panel y Ctrl+V con una imagen en el portapapeles.
 fn adjuntos_ui(ag: &mut Agente, ed: &Editor, ui: &mut Ui, ocupado: bool) {
+    use super::adjuntos;
     let raiz = ed.project.root.clone();
-    // Archivos soltados desde el sistema o imágenes pegadas con el puntero sobre el panel.
-    let encima = ui.ctx().pointer_hover_pos().is_some_and(|p| ui.max_rect().expand(400.0).contains(p) && ui.clip_rect().x_range().contains(p.x));
-    if encima && !ocupado {
-        let (soltados, pegadas) = ui.input(|i| {
+    let ctx = ui.ctx().clone();
+    // Lo que llega del selector, el portapapeles o la captura.
+    while let Ok(r) = ag.entrantes.1.try_recv() {
+        match r {
+            Ok(v) => {
+                for p in v {
+                    if !ag.adjuntos.contains(&p) {
+                        ag.adjuntos.push(p);
+                    }
+                }
+            }
+            Err(e) => maker_engine::log::warn("agente", e),
+        }
+    }
+    let panel = ui.max_rect().union(ui.clip_rect());
+    let encima = ctx.pointer_hover_pos().is_some_and(|p| ctx.layer_id_at(p).is_some() && p.x >= panel.left() && p.x <= panel.right());
+    let foco_entrada = ctx.memory(|m| m.focused()) == Some(ui.make_persistent_id("agente-texto"));
+    if !ocupado {
+        let (soltados, pegadas, pego_texto, flotando) = ui.input(|i| {
             let s: Vec<std::path::PathBuf> = i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect();
             let p: Vec<egui::ColorImage> = i.events.iter().filter_map(|e| if let egui::Event::PasteImage(img) = e { Some((**img).clone()) } else { None }).collect();
-            (s, p)
+            let t = i.events.iter().any(|e| matches!(e, egui::Event::Paste(_)));
+            (s, p, t, !i.raw.hovered_files.is_empty())
         });
-        for p in soltados {
-            if !ag.adjuntos.contains(&p) {
-                ag.adjuntos.push(p);
+        if encima {
+            for p in soltados {
+                if !ag.adjuntos.contains(&p) {
+                    ag.adjuntos.push(p);
+                }
+            }
+            if flotando {
+                let r = panel.shrink(4.0);
+                let pintor = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("agente-soltar")));
+                pintor.rect(r, 8.0, theme::ACCENT_SOFT.gamma_multiply(0.9), Stroke::new(2.0, theme::ACCENT), egui::StrokeKind::Inside);
+                pintor.text(r.center(), egui::Align2::CENTER_CENTER, "Soltar para adjuntar", egui::FontId::proportional(16.0), theme::ACCENT);
             }
         }
-        for img in pegadas {
-            match super::adjuntos::guardar_imagen(&img) {
-                Ok(p) => ag.adjuntos.push(p),
-                Err(e) => maker_engine::log::error("agente", format!("no se pudo guardar la imagen pegada: {e}")),
+        if encima || foco_entrada {
+            for img in &pegadas {
+                match adjuntos::guardar_imagen(img) {
+                    Ok(p) => ag.adjuntos.push(p),
+                    Err(e) => maker_engine::log::error("agente", format!("no se pudo guardar la imagen pegada: {e}")),
+                }
+            }
+            // Ctrl+V que egui entregó como texto: puede haber una imagen igualmente (o rutas de
+            // imágenes copiadas en el gestor de archivos).
+            if pegadas.is_empty() && pego_texto {
+                adjuntos::pegar_portapapeles(ag.entrantes.0.clone(), true, ctx.clone());
             }
         }
     }
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
+
+    // Miniaturas de imágenes y etiquetas de los demás archivos.
+    if !ag.adjuntos.is_empty() {
         let mut quitar = None;
-        for (i, a) in ag.adjuntos.iter().enumerate() {
-            let texto = format!("{}  ✕", super::adjuntos::nombre(a));
-            let b = egui::Button::new(RichText::new(texto).small().color(theme::TEXT1)).fill(theme::CARD).stroke(Stroke::new(1.0, theme::STROKE2)).corner_radius(CornerRadius::same(9));
-            if ui.add_enabled(!ocupado, b).on_hover_text(a.display().to_string()).clicked() {
-                quitar = Some(i);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+            for (i, a) in ag.adjuntos.iter().enumerate() {
+                if adjuntos::es_imagen(a) {
+                    let tex = ag.miniaturas.entry(a.clone()).or_insert_with(|| adjuntos::miniatura(a, 128).map(|ci| ctx.load_texture(format!("adj-{}", a.display()), ci, egui::TextureOptions::LINEAR))).clone();
+                    let (rect, resp) = ui.allocate_exact_size(egui::vec2(64.0, 64.0), egui::Sense::click());
+                    let p = ui.painter_at(rect);
+                    p.rect_filled(rect, 6.0, theme::CARD);
+                    if let Some(t) = &tex {
+                        let [w, h] = t.size();
+                        let k = (64.0 / w.max(h) as f32).min(1.0) * 1.0;
+                        let tam = egui::vec2(w as f32 * k, h as f32 * k);
+                        p.image(t.id(), egui::Rect::from_center_size(rect.center(), tam), egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+                    }
+                    p.rect_stroke(rect, 6.0, Stroke::new(1.0, theme::STROKE2), egui::StrokeKind::Inside);
+                    if resp.hovered() && !ocupado {
+                        let x = egui::Rect::from_center_size(rect.right_top() + egui::vec2(-10.0, 10.0), egui::vec2(16.0, 16.0));
+                        p.circle_filled(x.center(), 8.0, theme::TEXT1);
+                        p.text(x.center(), egui::Align2::CENTER_CENTER, "✕", egui::FontId::proportional(10.0), Color32::WHITE);
+                    }
+                    if resp.on_hover_text(adjuntos::nombre(a)).clicked() && !ocupado {
+                        quitar = Some(i);
+                    }
+                } else {
+                    let b = egui::Button::new(RichText::new(format!("{}  ✕", adjuntos::nombre(a))).small().color(theme::TEXT1)).fill(theme::CARD).stroke(Stroke::new(1.0, theme::STROKE2)).corner_radius(CornerRadius::same(9));
+                    if ui.add_enabled(!ocupado, b).on_hover_text(a.display().to_string()).clicked() {
+                        quitar = Some(i);
+                    }
+                }
             }
-        }
-        if let Some(i) = quitar {
-            ag.adjuntos.remove(i);
-        }
-        ui.add_enabled_ui(!ocupado, |ui| {
-            let id = ui.make_persistent_id("agente-adjuntar");
-            ui.menu_button(RichText::new("+ Adjuntar").small(), |ui| {
-                ui.set_min_width(320.0);
-                let (mut ruta, mut filtro): (String, String) = ui.data(|d| d.get_temp(id)).unwrap_or_default();
-                ui.horizontal(|ui| {
-                    let r = ui.add(egui::TextEdit::singleline(&mut ruta).hint_text("Ruta de un archivo o carpeta").desired_width(250.0));
-                    let ok = super::adjuntos::normalizar(&ruta, &raiz);
-                    let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    if (ui.add_enabled(ok.is_some(), egui::Button::new("Añadir")).clicked() || enter)
-                        && let Some(p) = ok
-                    {
-                        if !ag.adjuntos.contains(&p) {
-                            ag.adjuntos.push(p);
-                        }
-                        ruta.clear();
-                    }
-                });
-                ui.separator();
-                ui.add(egui::TextEdit::singleline(&mut filtro).hint_text("Buscar en el proyecto…").desired_width(f32::INFINITY));
-                let f = filtro.to_lowercase();
-                let mut archivos = Vec::new();
-                maker_engine::project::walk(&raiz, &mut |p| {
-                    let rel = p.strip_prefix(&raiz).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
-                    if f.is_empty() || rel.to_lowercase().contains(&f) {
-                        archivos.push((rel, p.to_path_buf()));
-                    }
-                });
-                egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
-                    for (rel, p) in archivos.into_iter().take(300) {
-                        let ya = ag.adjuntos.contains(&p);
-                        if ui.selectable_label(ya, rel).clicked() {
-                            if ya {
-                                ag.adjuntos.retain(|a| *a != p);
-                            } else {
-                                ag.adjuntos.push(p);
-                            }
-                        }
-                    }
-                });
-                ui.data_mut(|d| d.insert_temp(id, (ruta, filtro)));
-            })
-            .response
-            .on_hover_text("También puedes soltar archivos aquí o pegar una imagen (Ctrl+V)");
         });
+        if let Some(i) = quitar {
+            let a = ag.adjuntos.remove(i);
+            ag.miniaturas.remove(&a);
+        }
+        ui.add_space(2.0);
+    }
+
+    // Botones para adjuntar.
+    ui.add_enabled_ui(!ocupado, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            if ui.small_button("Imagen…").on_hover_text("Elegir imágenes del disco").clicked() {
+                adjuntos::elegir_imagenes(ag.entrantes.0.clone(), raiz.clone(), ctx.clone());
+            }
+            if ui.small_button("Pegar").on_hover_text("Imagen del portapapeles (también Ctrl+V)").clicked() {
+                adjuntos::pegar_portapapeles(ag.entrantes.0.clone(), false, ctx.clone());
+            }
+            let vp = ed.viewport_rect;
+            if ui.add_enabled(vp.is_positive(), egui::Button::new("Captura").small()).on_hover_text("Captura del visor 3D").clicked() {
+                let (tx, ppp, c2) = (ag.entrantes.0.clone(), ctx.pixels_per_point(), ctx.clone());
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::ScreenshotCallback::new(move |img| {
+                    let r = recortar(&img, vp, ppp).and_then(|(w, h, px)| adjuntos::guardar_rgba(w, h, &px, "captura")).map(|p| vec![p]);
+                    let _ = tx.send(r);
+                    c2.request_repaint();
+                })));
+            }
+            archivo_menu(ag, &raiz, ui);
+        });
+    });
+}
+
+/// Recorta la captura de la ventana al rectángulo del visor.
+fn recortar(img: &egui::ColorImage, r: egui::Rect, ppp: f32) -> Result<(u32, u32, Vec<u8>), String> {
+    let [w, h] = img.size;
+    let x0 = ((r.left() * ppp).round().max(0.0) as usize).min(w);
+    let y0 = ((r.top() * ppp).round().max(0.0) as usize).min(h);
+    let x1 = ((r.right() * ppp).round() as usize).clamp(x0, w);
+    let y1 = ((r.bottom() * ppp).round() as usize).clamp(y0, h);
+    if x1 <= x0 || y1 <= y0 {
+        return Err("captura vacía".into());
+    }
+    let mut px = Vec::with_capacity((x1 - x0) * (y1 - y0) * 4);
+    for y in y0..y1 {
+        for c in &img.pixels[y * w + x0..y * w + x1] {
+            px.extend_from_slice(&c.to_srgba_unmultiplied());
+        }
+    }
+    Ok(((x1 - x0) as u32, (y1 - y0) as u32, px))
+}
+
+/// «Archivo»: archivos del proyecto con buscador o cualquier ruta.
+fn archivo_menu(ag: &mut Agente, raiz: &std::path::Path, ui: &mut Ui) {
+    let id = ui.make_persistent_id("agente-adjuntar");
+    ui.menu_button(RichText::new("Archivo…").small(), |ui| {
+        ui.set_min_width(320.0);
+        let (mut ruta, mut filtro): (String, String) = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+        ui.horizontal(|ui| {
+            let r = ui.add(egui::TextEdit::singleline(&mut ruta).hint_text("Ruta de un archivo o carpeta").desired_width(250.0));
+            let ok = super::adjuntos::normalizar(&ruta, raiz);
+            let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if (ui.add_enabled(ok.is_some(), egui::Button::new("Añadir")).clicked() || enter)
+                && let Some(p) = ok
+            {
+                if !ag.adjuntos.contains(&p) {
+                    ag.adjuntos.push(p);
+                }
+                ruta.clear();
+            }
+        });
+        ui.separator();
+        ui.add(egui::TextEdit::singleline(&mut filtro).hint_text("Buscar en el proyecto…").desired_width(f32::INFINITY));
+        let f = filtro.to_lowercase();
+        let mut archivos = Vec::new();
+        maker_engine::project::walk(raiz, &mut |p| {
+            let rel = p.strip_prefix(raiz).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+            if f.is_empty() || rel.to_lowercase().contains(&f) {
+                archivos.push((rel, p.to_path_buf()));
+            }
+        });
+        egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+            for (rel, p) in archivos.into_iter().take(300) {
+                let ya = ag.adjuntos.contains(&p);
+                if ui.selectable_label(ya, rel).clicked() {
+                    if ya {
+                        ag.adjuntos.retain(|a| *a != p);
+                    } else {
+                        ag.adjuntos.push(p);
+                    }
+                }
+            }
+        });
+        ui.data_mut(|d| d.insert_temp(id, (ruta, filtro)));
     });
 }

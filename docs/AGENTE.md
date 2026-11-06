@@ -73,12 +73,14 @@ Las CLIs nunca preguntan nada durante un turno: lo que el nivel no permite, se d
 - **CLI, Modelo, Esfuerzo, Permisos**: valen para el siguiente mensaje. La CLI solo se puede
   cambiar antes del primer mensaje de la sesión; las CLIs que no se encuentran salen
   desactivadas.
-- **Adjuntos**: «+ Adjuntar» añade archivos del proyecto (con buscador) o cualquier ruta; también
-  puedes soltar archivos del sistema sobre el panel, arrastrar un modelo de Contenido o de la
-  Biblioteca al cuadro de texto, o pegar una imagen con Ctrl+V (se guarda en la caché, fuera del
-  proyecto). Se envían por ruta: la CLI los lee con sus herramientas; Codex recibe además las
-  imágenes como imagen (`--image`) y a Claude y Antigravity se les abren las carpetas de fuera del
-  proyecto con `--add-dir`.
+- **Adjuntos**: bajo el cuadro de texto, **Imagen…** abre el selector de archivos del sistema
+  (varias a la vez), **Pegar** toma la imagen del portapapeles, **Captura** adjunta una captura del
+  visor 3D y **Archivo…** busca archivos del proyecto o acepta cualquier ruta. También funciona
+  Ctrl+V con una imagen copiada (o con imágenes copiadas en el gestor de archivos) y soltar archivos
+  sobre el panel. Las imágenes se ven como miniaturas (clic para quitarlas); las pegadas y las
+  capturas se guardan en la caché, fuera del proyecto, y se borran a los 7 días. Se envían por ruta:
+  la CLI los lee con sus herramientas; Codex recibe además las imágenes como imagen (`--image`) y a
+  Claude y Antigravity se les abren las carpetas de fuera del proyecto con `--add-dir`.
 - **Medidor de contexto**: tokens ocupados frente a la ventana real del modelo, medida por la
   propia CLI (Claude: `/context`, sin coste; Codex: su registro de sesión). Antigravity no la
   informa: solo se muestran los tokens. **Compactar** la reduce:

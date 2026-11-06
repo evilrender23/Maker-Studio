@@ -158,6 +158,8 @@ pub struct Editor {
     /// Navegador de la biblioteca integrada.
     pub biblioteca: crate::biblioteca_ui::BibliotecaUi,
     pub contenido: crate::contenido_ui::ContenidoUi,
+    /// Dónde está el visor 3D en la ventana (para capturarlo).
+    pub viewport_rect: egui::Rect,
     /// Animación en modo edición (vista previa del Animator seleccionado).
     pub animation: maker_engine::animation::Animation,
 }
@@ -217,6 +219,7 @@ impl Editor {
             pending_save_script: false,
             biblioteca: Default::default(),
             contenido: Default::default(),
+            viewport_rect: egui::Rect::NOTHING,
             animation: Default::default(),
         };
         ed.undo.reset(&ed.scene);

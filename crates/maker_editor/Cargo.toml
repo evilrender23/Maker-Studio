@@ -23,4 +23,8 @@ egui-wgpu.workspace = true
 wgpu.workspace = true
 log.workspace = true
 env_logger.workspace = true
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
+# Selector de archivos nativo (portal XDG en Linux, sin librerías nuevas al compilar).
+rfd = "0.17"
+# Portapapeles de imágenes, las mismas features que ya usa egui-winit.
+arboard = { version = "3.6", default-features = false, features = ["image-data", "wayland-data-control"] }

@@ -74,6 +74,7 @@ fn toolbar(ed: &mut Editor, ui: &mut egui::Ui) {
 pub fn show(ed: &mut Editor, ui: &mut egui::Ui, rs: &egui_wgpu::RenderState) {
     toolbar(ed, ui);
     let rect = ui.available_rect_before_wrap();
+    ed.viewport_rect = rect;
     let resp = ui.interact(rect, ui.scope_id().with("viewport"), Sense::click_and_drag());
     let ppp = ui.ctx().pixels_per_point();
     let (pw, ph) = ((rect.width() * ppp).round().max(1.0) as u32, (rect.height() * ppp).round().max(1.0) as u32);

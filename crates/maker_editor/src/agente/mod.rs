@@ -76,6 +76,11 @@ pub struct Agente {
     pub chips: Vec<Chip>,
     /// Archivos adjuntos al próximo mensaje.
     pub adjuntos: Vec<PathBuf>,
+    /// Adjuntos que llegan de otros hilos (selector de archivos, portapapeles).
+    pub entrantes: (std::sync::mpsc::Sender<adjuntos::Entrante>, std::sync::mpsc::Receiver<adjuntos::Entrante>),
+    /// Miniaturas de las imágenes adjuntas.
+    pub miniaturas: HashMap<PathBuf, Option<egui::TextureHandle>>,
+
     pub renombrando: Option<String>,
     pub catalogo: Catalogo,
     ctx: egui::Context,
@@ -99,6 +104,8 @@ impl Agente {
             entrada: String::new(),
             chips: vec![Chip::Escena],
             adjuntos: Vec::new(),
+            entrantes: std::sync::mpsc::channel(),
+            miniaturas: HashMap::new(),
             renombrando: None,
             catalogo,
             ctx: ctx.clone(),

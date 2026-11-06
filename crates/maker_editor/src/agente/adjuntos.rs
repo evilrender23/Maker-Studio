@@ -85,12 +85,80 @@ fn carpeta_pegadas() -> Option<PathBuf> {
 
 /// Guarda una imagen pegada como PNG y devuelve su ruta.
 pub fn guardar_imagen(img: &egui::ColorImage) -> Result<PathBuf, String> {
-    let d = carpeta_pegadas().ok_or("no hay carpeta de caché")?;
-    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-    let p = d.join(format!("pegada-{ms}.png"));
     let bytes: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_srgba_unmultiplied()).collect();
-    image::save_buffer(&p, &bytes, img.size[0] as u32, img.size[1] as u32, image::ExtendedColorType::Rgba8).map_err(|e| e.to_string())?;
+    guardar_rgba(img.size[0] as u32, img.size[1] as u32, &bytes, "pegada")
+}
+
+/// Guarda píxeles RGBA como PNG en la caché de adjuntos.
+pub fn guardar_rgba(w: u32, h: u32, rgba: &[u8], prefijo: &str) -> Result<PathBuf, String> {
+    let d = carpeta_pegadas().ok_or("no hay carpeta de caché")?;
+    let ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let p = d.join(format!("{prefijo}-{ns}.png"));
+    image::save_buffer(&p, rgba, w, h, image::ExtendedColorType::Rgba8).map_err(|e| e.to_string())?;
     Ok(p)
+}
+
+/// Resultado de una operación en segundo plano (selector de archivos, portapapeles).
+pub type Entrante = Result<Vec<PathBuf>, String>;
+
+/// Selector de archivos nativo para imágenes (varias a la vez), en otro hilo.
+pub fn elegir_imagenes(tx: std::sync::mpsc::Sender<Entrante>, desde: PathBuf, ctx: egui::Context) {
+    std::thread::spawn(move || {
+        let v = rfd::FileDialog::new().set_title("Adjuntar imágenes").add_filter("Imágenes", &IMAGENES).add_filter("Todos los archivos", &["*"]).set_directory(desde).pick_files().unwrap_or_default();
+        let _ = tx.send(Ok(v));
+        ctx.request_repaint();
+    });
+}
+
+/// Lee una imagen del portapapeles del sistema (o rutas de imagen copiadas desde el gestor de
+/// archivos) en otro hilo. `silencioso`: sin error si no hay imagen (para Ctrl+V con texto).
+pub fn pegar_portapapeles(tx: std::sync::mpsc::Sender<Entrante>, silencioso: bool, ctx: egui::Context) {
+    std::thread::spawn(move || {
+        let r = (|| -> Entrante {
+            let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+            if let Ok(img) = cb.get_image() {
+                return Ok(vec![guardar_rgba(img.width as u32, img.height as u32, &img.bytes, "pegada")?]);
+            }
+            // Archivos copiados en el gestor de archivos: llegan como texto con rutas o URIs.
+            let texto = cb.get_text().unwrap_or_default();
+            let v: Vec<PathBuf> = texto.lines().filter_map(|l| {
+                let l = l.trim().strip_prefix("file://").unwrap_or(l.trim());
+                let p = PathBuf::from(percent_decode(l));
+                (p.is_file() && es_imagen(&p)).then_some(p)
+            }).collect();
+            if v.is_empty() && !silencioso {
+                return Err("el portapapeles no tiene ninguna imagen".into());
+            }
+            Ok(v)
+        })();
+        let _ = tx.send(r);
+        ctx.request_repaint();
+    });
+}
+
+/// `%20` → espacio, etc. (rutas de URIs `file://`).
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Miniatura cuadrada para mostrar un adjunto de imagen.
+pub fn miniatura(p: &Path, lado: u32) -> Option<egui::ColorImage> {
+    let img = image::open(p).ok()?.thumbnail(lado, lado).to_rgba8();
+    Some(egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw()))
 }
 
 #[cfg(test)]
@@ -113,5 +181,6 @@ mod tests {
         assert!(b.contains("- scripts/a.rs\n") && b.contains("(imagen)"));
         let _ = std::fs::remove_dir_all(&raiz);
         let _ = std::fs::remove_file(&fuera);
+        assert_eq!(percent_decode("/a%20b/c%C3%B1.png"), "/a b/cñ.png");
     }
 }

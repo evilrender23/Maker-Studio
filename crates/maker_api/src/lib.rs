@@ -302,6 +302,9 @@ pub struct HostApi {
     /// si la entidad no tiene Animator.
     pub play_animation: unsafe extern "C" fn(*mut c_void, Entity, *const u8, usize, f32) -> bool,
     pub set_animation_speed: unsafe extern "C" fn(*mut c_void, Entity, f32),
+    /// Sombreado global de la escena: código de `Shading` o `u32::MAX` para
+    /// que cada material use el suyo.
+    pub set_global_shading: unsafe extern "C" fn(*mut c_void, u32),
 }
 
 /// Tipos de propiedad exportada (como `[SerializeField]` / `@export`).
@@ -502,6 +505,11 @@ impl<'a> Ctx<'a> {
     /// Cambia el modelo de sombreado del material de `e` (toon, PBR…).
     pub fn set_shading(&mut self, e: Entity, shading: Shading) {
         unsafe { (self.api.set_shading)(self.api.ctx, e, shading as u32) }
+    }
+    /// Fuerza un modelo de sombreado en todos los materiales de la escena
+    /// (salvo los marcados «Ignorar sombreado global»); `None` lo quita.
+    pub fn set_global_shading(&mut self, shading: Option<Shading>) {
+        unsafe { (self.api.set_global_shading)(self.api.ctx, shading.map_or(u32::MAX, |s| s as u32)) }
     }
     /// Reproduce el clip `name` del Animator de `e`, fundiéndolo con el
     /// anterior durante `crossfade` segundos. Devuelve `false` si `e` no tiene

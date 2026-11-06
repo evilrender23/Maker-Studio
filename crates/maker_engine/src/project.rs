@@ -123,6 +123,9 @@ impl Project {
         scene.save(&project.main_scene_path())?;
         if demo {
             library_scene().save(&project.root.join("scenes/biblioteca.mscene"))?;
+            for (name, src) in crate::postproceso::EXAMPLES {
+                write(&project.root.join(crate::postproceso::CUSTOM_DIR).join(name), src)?;
+            }
         }
         Ok(project)
     }
@@ -264,6 +267,14 @@ pub fn demo_scene() -> Scene {
     let mut slot = ScriptSlot { name: "CameraFollow".into(), enabled: true, ..Default::default() };
     slot.props.insert("offset".into(), PropVal::Vec3([0.0, 4.0, 8.0]));
     s.insert(cam, Scripts(vec![slot]));
+    // Posprocesado: bloom suave (el orbe brilla) y los dos efectos propios de
+    // ejemplo, apagados, para probarlos desde el Inspector.
+    use crate::postproceso::{Bloom, CustomEffect, PostEffect, PostKind};
+    s.env.post.push(PostEffect { intensity: 0.4, ..PostEffect::new(PostKind::Bloom(Bloom::default())) });
+    for (name, _) in crate::postproceso::EXAMPLES {
+        let path = format!("{}/{name}", crate::postproceso::CUSTOM_DIR);
+        s.env.post.push(PostEffect { enabled: false, ..PostEffect::new(PostKind::Custom(CustomEffect { path, ..Default::default() })) });
+    }
     s.update_transforms();
     s
 }
@@ -641,6 +652,10 @@ mod tests {
         let sphere = scene.find_by_name("Esfera").unwrap();
         assert_eq!(scene.get::<MeshRenderer>(sphere).unwrap().material.shading, ShadingModel::Hatching);
         assert_eq!(p2.scenes(), vec!["scenes/biblioteca.mscene".to_string(), "scenes/main.mscene".to_string()]);
+        // Los efectos propios de ejemplo existen y la escena los referencia.
+        let used = crate::postproceso::custom_shaders_used([&scene.env]);
+        assert_eq!(used.len(), 2);
+        assert!(used.iter().all(|u| p2.root.join(u).is_file()), "{used:?}");
         // El escaparate usa la biblioteca integrada y un personaje animado.
         let lib = Scene::load(&p2.root.join("scenes/biblioteca.mscene")).unwrap();
         let hero = lib.find_by_name("Personaje").unwrap();

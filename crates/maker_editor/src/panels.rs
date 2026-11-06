@@ -1024,7 +1024,7 @@ fn scripts(ed: &mut Editor, ui: &mut Ui, id: EntityId) {
 fn environment(ed: &mut Editor, ui: &mut Ui) {
     ui.label(RichText::new("Entorno de la escena").strong());
     ui.add_space(4.0);
-    let mut env = ed.scene.env;
+    let mut env = ed.scene.env.clone();
     egui::Grid::new("env-grid").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
         ui.label("Cielo (cénit)");
         color3(ui, &mut env.sky_top);

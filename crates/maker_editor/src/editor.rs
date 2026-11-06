@@ -174,7 +174,6 @@ pub struct Editor {
     src_huella: Option<u64>,
     /// Comprobar las fuentes en el siguiente fotograma (p. ej. al guardar un script).
     comprobar_fuentes: bool,
-    pub new_script_name: String,
     pub importador: crate::importar::Importador,
     pub pending_reload_after_play: bool,
     /// Escena modificada desde el último guardado.
@@ -265,7 +264,6 @@ impl Editor {
             auto_build: true,
             src_huella: None,
             comprobar_fuentes: true,
-            new_script_name: String::new(),
             importador: Default::default(),
             pending_reload_after_play: false,
             dirty: false,
@@ -336,21 +334,6 @@ impl Editor {
             }
             Err(e) => log::error("editor", e),
         }
-    }
-
-    pub fn new_scene(&mut self, name: &str) {
-        let rel = format!("scenes/{}.mscene", name.trim().replace(['/', '\\'], "_"));
-        let path = self.project.root.join(&rel);
-        if path.exists() {
-            log::warn("editor", format!("{rel} ya existe"));
-            return;
-        }
-        let s = Scene::starter();
-        if let Err(e) = s.save(&path) {
-            log::error("editor", e);
-            return;
-        }
-        self.open_scene(&rel);
     }
 
     /// Confirma un cambio en el historial (llamar cuando termina una edición).

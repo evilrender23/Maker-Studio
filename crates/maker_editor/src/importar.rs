@@ -179,7 +179,7 @@ fn decodificar(s: &str) -> String {
 }
 
 /// Ruta libre: `dir/nombre.ext`, o `dir/nombre (2).ext`… si ya existe (o ya está planificada).
-fn libre(dir: &Path, nombre: &str, ocupados: &[PathBuf]) -> PathBuf {
+pub(crate) fn libre(dir: &Path, nombre: &str, ocupados: &[PathBuf]) -> PathBuf {
     let p = dir.join(nombre);
     if !p.exists() && !ocupados.contains(&p) {
         return p;

@@ -24,7 +24,9 @@ scripts de cada juego.
 - **Editor** (`maker-studio`): Project Hub, jerarquía con arrastrar y soltar,
   inspector de componentes, viewport 3D con gizmos de mover/rotar/escalar
   (local/global, ajuste a rejilla), selección por clic, cámara de vuelo estilo
-  Unity/Unreal, explorador de contenido, importación de assets con el selector de
+  Unity/Unreal, explorador de contenido al estilo Unity/Unreal (árbol de
+  carpetas, ruta con atrás/adelante, cuadrícula o lista, selección múltiple,
+  renombrar, mover arrastrando y duplicar actualizando las referencias, papelera; Ctrl+Espacio), importación de assets con el selector de
   archivos del sistema (uno o varios, o carpetas enteras; Ctrl+I) o soltándolos
   sobre Contenido o el visor (los `.gltf` se llevan su `.bin` y texturas), consola, editor de scripts con
   resaltado, deshacer/rehacer, Play / Pausa / Paso con la escena restaurada al

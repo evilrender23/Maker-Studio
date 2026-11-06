@@ -530,6 +530,9 @@ fn shortcuts(ed: &mut Editor, ctx: &egui::Context) {
         if i.consume_key(M::NONE, K::F7) {
             ed.build_scripts();
         }
+        if !game && !typing && i.consume_shortcut(&S::new(M::COMMAND, K::Space)) {
+            ed.bottom_tab = crate::editor::BottomTab::Content;
+        }
         if !game && i.consume_shortcut(&S::new(M::COMMAND, K::I)) {
             let d = ed.project.root.join(ed.contenido.carpeta());
             ed.importador.abrir(false, d, &ctx.clone());

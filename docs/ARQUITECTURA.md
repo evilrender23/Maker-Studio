@@ -1,12 +1,13 @@
 # Arquitectura
 
-Maker Studio es un workspace de Cargo con cinco crates:
+Maker Studio es un workspace de Cargo con seis crates:
 
 | Crate          | Qué es |
 |----------------|--------|
 | `maker_api`    | API de scripting: tipos C-ABI, el trait `Script`, `Ctx`, `Props` y la macro `export_scripts!`. Es lo único de lo que depende el crate de scripts de un juego. |
 | `maker_engine` | Núcleo sin gráficos: ECS, interfaz de juego (`ui/`: layout, estilos, fuentes, plantillas, entrada y lista de dibujo), escena y su formato, jerarquía de transforms, mallas (primitivas y glTF), modelos con materiales, esqueletos y clips (`model.rs`), animación (`animation.rs`), biblioteca integrada (`biblioteca.rs`), física, entrada, carga de scripts, bucle de juego, proyectos. Se prueba sin ventana. |
 | `maker_render` | Renderizador de escena sobre wgpu (Vulkan, Metal, DX12 o GL según la plataforma). |
+| `maker_textura` | Modo Texturizado sin interfaz: incrusta el motor y el renderer de TextureCraft (git, commit fijo), abre assets, guarda `.tcraft`, aplica (texturas glTF + GLB) y la CLI `maker-studio textura`. Ver [TEXTURIZADO.md](TEXTURIZADO.md). |
 | `maker_editor` | El editor (`maker-studio`), con egui. |
 | `maker_player` | El reproductor sin editor (`maker-player`), que es el ejecutable de un juego exportado. |
 

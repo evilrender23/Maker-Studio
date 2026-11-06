@@ -54,6 +54,7 @@ pub enum Icon {
     /// Escena de arranque (primera del orden de escenas) y Play desde ella.
     Inicio,
     EstiloVisual,
+    Pincel,
 }
 
 impl Icon {
@@ -86,6 +87,7 @@ impl Icon {
             Icon::Lienzo => &px::LIENZO,
             Icon::PanelUi => &px::PANEL_UI,
             Icon::Imagen => &px::IMAGEN,
+            Icon::Pincel => &px::PINCEL,
             Icon::Texto => &px::TEXTO,
             Icon::Boton => &px::BOTON,
             Icon::Barra => &px::BARRA,

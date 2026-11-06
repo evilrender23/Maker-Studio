@@ -88,45 +88,140 @@ tema y nuestros iconos.
 Licencia: TextureCraft se usa bajo MIT (a elegir entre MIT y Apache-2.0); hay que conservar su aviso
 de copyright en los créditos de Maker.
 
-## 4. Diseño del modo
+## 4. El modo
 
-**Entrada**: en Contenido o en el inspector de una entidad con malla, *Texturizar*. Abre el modo
-con el `.glb` del asset; si los UV se solapan más de un 5 %, propone UV únicos.
+### Abrir
 
-**Distribución** (mismo esqueleto de paneles que el resto del editor):
+- **Contenido** → clic derecho en un modelo (glTF, GLB, FBX, OBJ, USD…) → *Texturizar…*.
+- **Inspector** de una entidad con modelo → *Malla* → *Texturizar…*. Al aplicar, la entidad pasa a
+  usar el modelo texturizado.
+- **Archivo → Texturizar asset…**, o doble clic en un `.tcraft` de Contenido (tipo
+  *Texturizados*).
 
-- izquierda: materiales, materiales inteligentes, máscaras inteligentes y alfas de pincel;
-- centro: viewport 3D (renderer de TextureCraft dentro de un callback de egui) y vista UV 2D;
-- derecha: texture sets, pila de capas (pintura/relleno/carpeta, máscaras, efectos) y
-  propiedades de la herramienta o capa;
-- barra de herramientas: pincel, borrador, proyección, relleno de polígono, difuminar, clonar,
-  cuentagotas, simetría.
+Antes de abrir un modelo se eligen:
 
-**Salida** (*Aplicar al asset*):
+| Opción | Qué hace |
+|---|---|
+| Resolución | Lado de las texturas de cada texture set (512–4096; luego se cambia por set). |
+| UV únicos | Despliega los UV de nuevo, sin solapes. Se propone sola si más del 5 % de los UV se pisa (los trim sheets de la biblioteca). No está disponible en personajes con esqueleto: el modelo nuevo perdería la piel. |
+| Partir de sus texturas | Una capa *Original* por texture set con el color base (o su color) y el normal map del asset, proyectados por sus UV; la capa de pintura queda encima. Sin sentido con UV únicos. |
 
-1. guarda `<asset>.tcraft` junto al asset para reeditar;
-2. exporta con el preset *glTF PBR Metal Roughness* a `texturas/<asset>_*.png`;
-3. actualiza el material de Maker (color base, normal y, cuando el renderer los admita,
-   ORM y emisión) y recarga la miniatura.
+Un modelo ya texturizado (dentro de `texturizados/`) retoma su proyecto.
+
+### Distribución
+
+Sustituye la del editor mientras está abierto (el panel del agente sigue disponible):
+
+- **Barra superior**: deshacer/rehacer, vista 3D o UV, lo que muestra el visor (material, un
+  canal, un mapa horneado, cuadrícula UV), *Hornear…*, *Exportar…*, *Guardar*,
+  *Aplicar al asset* y *Salir*.
+- **Izquierda, estante**: materiales, materiales inteligentes, máscaras inteligentes y alfas de
+  pincel, con miniaturas y búsqueda. Clic aplica (el material encima de la capa seleccionada, la
+  máscara a la capa, el alfa al pincel); los materiales y máscaras también se arrastran al visor
+  o a una fila de la pila.
+- **Centro, visor**: herramientas (pincel, borrador, proyección, relleno, difuminar, clonar,
+  cuentagotas) y simetría X/Y/Z encima.
+- **Derecha**: texture sets (visibilidad, resolución), pila de capas y propiedades.
+
+### Visor
+
+| Acción | Control |
+|---|---|
+| Pintar | Clic izquierdo y arrastrar (presión del lápiz si la hay) |
+| Línea recta desde la última pincelada | Mayús + clic |
+| Orbitar | Botón derecho, o Alt + izquierdo |
+| Desplazar | Botón central, o Mayús + derecho |
+| Acercar | Rueda |
+| Tamaño del pincel | Ctrl + rueda, `[` y `]` |
+| Origen del clonado | V + clic (herramienta Clonar) |
+| Encuadrar | F |
+| Herramientas | B pincel, E borrador, P relleno, I cuentagotas |
+| Vista 3D / UV | Tab |
+| Deshacer / rehacer / guardar | Ctrl+Z, Ctrl+Y (Ctrl+Mayús+Z), Ctrl+S |
+
+En la vista UV se pinta sobre el despliegue; la rueda acerca y los botones central o derecho
+desplazan.
+
+### Capas
+
+Filas de arriba abajo, con carpetas plegables. Ojo: visibilidad. Chip a la derecha: la máscara
+(clic la selecciona para pintarla; Alt + clic la muestra sola en el visor). Doble clic renombra.
+Arrastrar una fila sobre otra la coloca encima (dentro, si es una carpeta). Menú contextual:
+renombrar, duplicar, agrupar, aplanar, subir/bajar, máscara (blanca, negra, inteligente,
+generador, pintura, invertir, activar, quitar) y eliminar.
+
+### Propiedades
+
+- **Herramienta**: tamaño, flujo, opacidad, dureza, espaciado, ángulo, seguir trazo, solo caras
+  visibles y ratón perezoso; con la capa (no la máscara) seleccionada, qué canales pinta y con
+  qué valor. Pintando una máscara, el gris que deja.
+- **Capa**: modo de fusión y opacidad por canal; en las de relleno, proyección y fuente de cada
+  canal (uniforme o uno de los 22 procedurales, con escala y semilla); efectos del contenido y de
+  la máscara con sus parámetros, visibilidad y opacidad; *+ Efecto* añade generadores (desgaste
+  de bordes, suciedad, curvatura, oclusión…), filtros, niveles, rellenos o pintura.
+
+Los deslizadores confirman al soltar: un arrastre es un solo paso de deshacer.
+
+### Hornear y exportar
+
+*Hornear…* calcula en otro hilo (trazado de rayos por GPU de TextureCraft) los mapas elegidos
+(oclusión, curvatura, grosor, normal y posición del mundo, ID…) para todos los texture sets o el
+activo; las máscaras de los materiales inteligentes los necesitan. *Exportar…* escribe texturas
+con cualquier preset (glTF, Unreal, Unity, Godot, Blender…), formato y tamaño, o la malla en GLB.
+
+### Aplicar al asset
+
+Todo vive en `texturizados/<nombre>/` del proyecto:
+
+1. guarda `<nombre>.tcraft` (escritura atómica) para seguir otro día;
+2. exporta cada texture set con el preset *glTF PBR Metal Roughness* a `texturas/`
+   (`BaseColor`, `OcclusionRoughnessMetallic`, `Normal` y, si hay emisión, `Emissive`);
+3. escribe `<nombre>.glb`: el modelo de partida intacto (jerarquía, piel y animaciones) con cada
+   material apuntando a esas texturas por nombre; con UV únicos, la malla desplegada;
+4. si se abrió desde una entidad, le pone ese modelo (un paso de deshacer de la escena).
 
 El renderer de Maker lee del glTF el color base, el normal, el metal/rugosidad, la oclusión y la
-emisión ([SHADERS.md](SHADERS.md#mapas-pbr-del-gltf)), así que nada de lo pintado se pierde al
-aplicarlo. El GLB texturizado de TextureCraft (`Session::mesh_glb_bytes`) se carga con todos sus
-mapas.
+emisión ([SHADERS.md](SHADERS.md#mapas-pbr-del-gltf)), así que nada de lo pintado se pierde. La
+biblioteca no se toca nunca.
 
-## 5. Fases
+### Sin ventana (agente y scripts)
+
+`maker-studio textura <orden>` en la carpeta del proyecto:
+
+| Orden | Qué hace |
+|---|---|
+| `info <asset>` | Triángulos, materiales, solape de UV, piel (JSON) |
+| `comandos [filtro]` | Los comandos de TextureCraft con sus parámetros |
+| `abrir <asset> [--resolucion N] [--uv-unicos] [--sin-original]` | Crea `texturizados/<nombre>/<nombre>.tcraft` |
+| `ejecutar <x.tcraft> <id> [json]` | Un comando, y guarda |
+| `lote <x.tcraft> <pasos.json>` | `[{"id", "params"}, …]`, y guarda |
+| `aplicar <x.tcraft>` | Texturas y `<nombre>.glb` |
+| `render <x.tcraft> <png> [--size AxB] [--yaw G]` | Vista previa |
+
+La guía del modo agente lo explica, y al terminar un turno que toque `texturizados/` el editor
+vuelve a leer los modelos y recarga el texturizado abierto si no tiene cambios propios.
+
+## 5. Limitaciones
+
+- Los UV únicos no se ofrecen en modelos con piel; esos se pintan con sus UV (si se solapan,
+  lo pintado se repite).
+- Con UV únicos se empieza desde cero: las texturas originales no encajan en el despliegue nuevo.
+- El GLB aplicado conserva dentro las imágenes incrustadas del original aunque ya no las use.
+- La proyección con plantilla (stencil), el trazado (Path), las calcomanías y las mallas de alta
+  resolución para hornear están en los comandos (CLI y agente) pero aún no en la interfaz.
+- La vista UV no dibuja el cursor del pincel.
+
+## 6. Fases
 
 - [x] **F0. Estudio y prueba de integración**: este documento y el crate `maker_textura`.
 - [x] **F1. Renderer**: `metallicRoughnessTexture`, `occlusionTexture` y `emissiveTexture` en
       `maker_render` e importación glTF.
-- [ ] **F2. Sesión**: `maker_textura` abre un asset (con UV únicos opcionales), guarda/carga
-      `.tcraft` y aplica el resultado a la biblioteca.
-- [ ] **F3. Viewport**: callback de egui con el `Renderer` de TextureCraft compartiendo el
-      `Device` de eframe; sincronización de teselas por frame; navegación igual que el viewport
-      de Maker.
-- [ ] **F4. Pintura**: pincel/borrador con tamaño, flujo, dureza y espaciado; deshacer; selector de
-      canales.
-- [ ] **F5. Capas y materiales**: pila de capas, máscaras, estantería de materiales y
-      materiales inteligentes con arrastrar y soltar.
-- [ ] **F6. Horneado y exportación**: panel de horneado y presets de exportación.
-- [ ] **F7. Agente**: exponer los comandos de TextureCraft a la herramienta del agente de Maker.
+- [x] **F2. Sesión**: abrir un asset (UV únicos, capas originales), guardar/abrir `.tcraft` y
+      aplicar (texturas + GLB que conserva piel y animaciones).
+- [x] **F3. Viewport**: callback de egui con el `Renderer` de TextureCraft sobre el `Device` de
+      eframe, sincronización de teselas con presupuesto por fotograma, vistas 3D y UV.
+- [x] **F4. Pintura**: herramientas, pincel, canales, simetría, presión, deshacer.
+- [x] **F5. Capas y materiales**: pila con máscaras y efectos, estante con miniaturas y arrastrar
+      y soltar.
+- [x] **F6. Horneado y exportación**: ventanas con progreso y presets.
+- [x] **F7. Agente**: `maker-studio textura …` y la guía del modo agente.

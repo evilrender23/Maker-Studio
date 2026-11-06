@@ -111,6 +111,9 @@ Las CLIs nunca preguntan nada durante un turno: lo que el nivel no permite, se d
 - Si cambió el script abierto en el editor de código y no tiene cambios sin guardar, se recarga.
 - Si cambió algo en `scripts/src` y está activado **Recompilar scripts**, se compilan y se
   recargan en caliente.
+- Si cambió algo en `texturizados/`, el renderer vuelve a leer los modelos y el texturizado
+  abierto se recarga si no tiene cambios propios. La guía que recibe el agente le explica
+  `maker-studio textura` ([TEXTURIZADO.md](TEXTURIZADO.md#sin-ventana-agente-y-scripts)).
 - La consola muestra un resumen: duración, herramientas usadas y archivos cambiados.
 
 ## Dónde se guarda el historial

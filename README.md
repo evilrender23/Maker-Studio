@@ -64,6 +64,12 @@ scripts de cada juego.
   [docs/SHADERS.md](docs/SHADERS.md#normal-maps).
 - **Mapas PBR del glTF**: metal/rugosidad, oclusión y emisión por texel. Ver
   [docs/SHADERS.md](docs/SHADERS.md#mapas-pbr-del-gltf).
+- **Modo Texturizado**: pintar materiales PBR por capas sobre cualquier modelo
+  (pincel, borrador, proyección, relleno, clonar…), máscaras, efectos,
+  materiales y máscaras inteligentes, horneado de mapas de malla por GPU y
+  exportación con presets; *Aplicar al asset* deja texturas glTF y una copia
+  del modelo en `texturizados/`. Con el motor de TextureCraft. También sin
+  ventana (`maker-studio textura`). Ver [docs/TEXTURIZADO.md](docs/TEXTURIZADO.md).
 - **Posprocesado** por escena: pila ordenada de efectos (tonemapping ACES/AgX,
   corrección de color con LUT, bloom, viñeta, aberración cromática, grano,
   retro, enfoque, FXAA, contorno en pantalla, niebla de altura, profundidad de
@@ -235,3 +241,8 @@ Copyright (c) 2026 EvilRender23
 Si usas Maker Studio o parte de su código en tu proyecto, incluye un crédito
 visible, por ejemplo: "Basado en Maker Studio de EvilRender23
 (https://github.com/evilrender23)".
+
+El modo Texturizado usa el motor de [TextureCraft](https://github.com/storytold/texturecraft)
+(Copyright (c) 2026 ArtCraft Team and the TextureCraft contributors), bajo licencia MIT; partes
+de su interfaz (`crates/maker_editor/src/textura/gpu.rs`, `es.rs` y el sombreado de las
+miniaturas) y de su render sin ventana están adaptadas de su código.

@@ -9,6 +9,6 @@ authors.workspace = true
 texturecraft-engine = { git = "https://github.com/storytold/texturecraft", rev = "e01dac2" }
 texturecraft-render = { git = "https://github.com/storytold/texturecraft", rev = "e01dac2" }
 serde_json.workspace = true
-
-[dev-dependencies]
 maker_engine.workspace = true
+rayon = "1"
+image = { version = "0.25", default-features = false, features = ["png"] }

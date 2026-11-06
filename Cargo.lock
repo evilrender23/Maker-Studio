@@ -1654,6 +1654,8 @@ dependencies = [
  "maker_api",
  "maker_engine",
  "maker_render",
+ "maker_textura",
+ "rayon",
  "rfd",
  "serde",
  "serde_json",
@@ -1716,7 +1718,9 @@ dependencies = [
 name = "maker_textura"
 version = "0.1.0"
 dependencies = [
+ "image",
  "maker_engine",
+ "rayon",
  "serde_json",
  "texturecraft-engine",
  "texturecraft-render",

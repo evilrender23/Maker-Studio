@@ -30,11 +30,12 @@ pub enum Tipo {
     Plantilla,
     Fuente,
     EstiloVisual,
+    Textura,
     Otro,
 }
 
 impl Tipo {
-    const FILTROS: [Tipo; 10] = [Tipo::Escena, Tipo::Modelo, Tipo::Imagen, Tipo::Script, Tipo::Estilo, Tipo::Tema, Tipo::Plantilla, Tipo::Fuente, Tipo::EstiloVisual, Tipo::Otro];
+    const FILTROS: [Tipo; 11] = [Tipo::Escena, Tipo::Modelo, Tipo::Imagen, Tipo::Script, Tipo::Estilo, Tipo::Tema, Tipo::Plantilla, Tipo::Fuente, Tipo::EstiloVisual, Tipo::Textura, Tipo::Otro];
 
     pub fn de(p: &Path) -> Tipo {
         if p.is_dir() {
@@ -50,6 +51,7 @@ impl Tipo {
             Some("mui") => Tipo::Plantilla,
             Some("ttf" | "otf") => Tipo::Fuente,
             Some(maker_engine::estilo_visual::EXT) => Tipo::EstiloVisual,
+            Some("tcraft") => Tipo::Textura,
             _ => Tipo::Otro,
         }
     }
@@ -66,6 +68,7 @@ impl Tipo {
             Tipo::Plantilla => "Plantillas de interfaz",
             Tipo::Fuente => "Fuentes",
             Tipo::EstiloVisual => "Estilos visuales",
+            Tipo::Textura => "Texturizados",
             Tipo::Otro => "Otros",
         }
     }
@@ -82,6 +85,7 @@ impl Tipo {
             Tipo::Plantilla => "Plantilla",
             Tipo::Fuente => "Fuente",
             Tipo::EstiloVisual => "Estilo visual",
+            Tipo::Textura => "Texturizado",
             Tipo::Otro => "Archivo",
         }
     }
@@ -98,6 +102,7 @@ impl Tipo {
             Tipo::Plantilla => (Icon::Plantilla, theme::GREEN),
             Tipo::Fuente => (Icon::Fuente, theme::CYAN),
             Tipo::EstiloVisual => (Icon::EstiloVisual, theme::WARM),
+            Tipo::Textura => (Icon::Pincel, theme::ORANGE),
             Tipo::Otro => (Icon::Archivo, theme::TEXT3),
         }
     }
@@ -422,6 +427,7 @@ enum Accion {
     Borrar(Vec<PathBuf>),
     Explorador(PathBuf),
     OrdenEscenas,
+    Texturizar(PathBuf),
 }
 
 pub fn show(ed: &mut Editor, ui: &mut Ui) {
@@ -731,6 +737,10 @@ fn elementos_ui(ed: &mut Editor, ui: &mut Ui, raiz: &Path, items: &[PathBuf], ac
                             acciones.push(Accion::Abrir(p.clone()));
                             ui.close();
                         }
+                        if maker_textura::sesion::es_malla(p) && ui.button("Texturizar…").clicked() {
+                            acciones.push(Accion::Texturizar(p.clone()));
+                            ui.close();
+                        }
                         if ui.button("Mostrar en el explorador").clicked() {
                             acciones.push(Accion::Explorador(p.parent().unwrap_or(raiz).to_path_buf()));
                             ui.close();
@@ -983,6 +993,7 @@ fn aplicar(ed: &mut Editor, raiz: &Path, a: Accion) {
     use maker_engine::log;
     match a {
         Accion::Abrir(p) => abrir(ed, raiz, &p),
+        Accion::Texturizar(p) => ed.texturizar = Some((p, None)),
         Accion::Crear(que, nombre) => {
             let dir = raiz.join(&ed.contenido.carpeta);
             match que {
@@ -1117,6 +1128,7 @@ fn abrir(ed: &mut Editor, raiz: &Path, p: &Path) {
             ed.instanciar_plantilla(&rel, None);
         }
         Tipo::EstiloVisual => crate::estilo_visual_ui::aplicar_archivo(ed, p),
+        Tipo::Textura => ed.texturizar = Some((p.to_path_buf(), None)),
         Tipo::Script => ed.open_script(p.to_path_buf()),
         Tipo::Imagen | Tipo::Fuente | Tipo::Otro => {
             if es_texto(p) {

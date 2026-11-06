@@ -206,6 +206,12 @@ pub struct Editor {
     pub normales: crate::normal_ui::Normales,
     /// Ventana «Orden de escenas».
     pub ventana_escenas: bool,
+    /// Modo Texturizado abierto (sustituye la distribución del editor).
+    pub textura: Option<Box<crate::textura::ModoTextura>>,
+    /// Asset elegido para texturizar, a la espera de sus opciones.
+    pub pedido_textura: Option<crate::textura::Pedido>,
+    /// Asset que la interfaz pidió texturizar este fotograma (y la entidad que lo usa).
+    pub texturizar: Option<(PathBuf, Option<EntityId>)>,
 }
 
 impl Editor {
@@ -283,6 +289,9 @@ impl Editor {
             plantillas: BTreeMap::new(),
             normales: Default::default(),
             ventana_escenas: false,
+            textura: None,
+            pedido_textura: None,
+            texturizar: None,
         };
         let docs = ed.docs_ui();
         ed.undo.reset_con(&ed.scene, docs);

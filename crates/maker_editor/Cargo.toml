@@ -13,6 +13,8 @@ path = "src/main.rs"
 maker_api.workspace = true
 maker_engine.workspace = true
 maker_render.workspace = true
+maker_textura = { path = "../maker_textura" }
+rayon = "1"
 glam.workspace = true
 hecs.workspace = true
 serde.workspace = true

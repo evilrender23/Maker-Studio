@@ -465,6 +465,24 @@ impl Agente {
                 notas.push(format!("Escena {r} recargada"));
             }
         }
+        // Modelos texturizados: el renderer vuelve a leerlos; el texturizado abierto sin cambios
+        // propios se recarga si el agente cambió su proyecto.
+        let tex = ed.project.root.join(maker_textura::sesion::CARPETA);
+        if cambios.iter().any(|p| p.starts_with(&tex)) {
+            ed.renderer.clear_model_cache();
+            if let Some(m) = &mut ed.textura {
+                let ruta = m.t.ruta_proyecto();
+                if cambios.contains(&ruta) && !m.t.s.modified {
+                    match maker_textura::sesion::abrir(&ruta, &ed.project.root, Default::default()) {
+                        Ok(t) => {
+                            m.recargar(t);
+                            notas.push(format!("Texturizado {} recargado", m.t.nombre));
+                        }
+                        Err(e) => log::warn("agente", e),
+                    }
+                }
+            }
+        }
         // Script abierto en el editor de código.
         let mut script_sucio_cambiado = false;
         if let Some(sc) = &mut ed.script

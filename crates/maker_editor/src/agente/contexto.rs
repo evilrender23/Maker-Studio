@@ -32,7 +32,10 @@ export_scripts!(Rotator, /* todos los tipos */);
 ```
 Ctx: dt, time, frame, entity; log/warn/error; position/set_position/translate/rotation/set_rotation/rotate_y/rotate_local/scale/set_scale; find(nombre), exists, position_of, set_position_of, rotation_of, set_rotation_of, set_color, spawn(Primitive, pos, spawn_flags::DYNAMIC_BODY|STATIC_BODY), destroy; key_down/key_pressed/axis(Key, Key)/mouse_down/mouse_delta; velocity/set_velocity/apply_impulse/apply_impulse_to/raycast; load_scene(nombre o ruta)/load_scene_index(i)/next_scene/previous_scene/reload_scene (se aplican al acabar el fotograma), scene_index/scene_count/scene_name. Props: float, int, bool, vec3, color.
 Compilar: `cargo build --release --manifest-path scripts/Cargo.toml` (el editor lo hace solo tras tus cambios en scripts/src y recarga la biblioteca en caliente). Un tipo nuevo debe añadirse a export_scripts! para aparecer en Inspector → Añadir componente → Script.
-Si cambias una escena, el editor la recarga si no tiene cambios sin guardar."#,
+Si cambias una escena, el editor la recarga si no tiene cambios sin guardar.
+
+Texturizado (pintar texturas PBR de un modelo con el motor de TextureCraft): `"{exe}" textura <orden>` en esta carpeta. Órdenes: `info <asset>` (solape de UV, piel), `comandos [filtro]` (los ~135 comandos: capas, máscaras, materiales, horneado, exportación), `abrir <asset> [--resolucion N] [--uv-unicos] [--sin-original]` (crea texturizados/<nombre>/<nombre>.tcraft), `ejecutar <x.tcraft> <id> [json]`, `lote <x.tcraft> <pasos.json>` con `[{{"id":…,"params":{{…}}}}]`, `aplicar <x.tcraft>` (texturas glTF + texturizados/<nombre>/<nombre>.glb; ponlo en el `mesh` de la entidad como {{"Model":"texturizados/<nombre>/<nombre>.glb"}}) y `render <x.tcraft> <png>` para ver el resultado. Flujo típico: abrir → `bake.run {{"ts":"all"}}` → `material.apply {{"material":"rust"}}` (ids en `material.list`) → máscaras/efectos → aplicar → render."#,
+        exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "maker-studio".into()),
         nombre = p.name(),
         raiz = p.root.display(),
         principal = p.escena_inicial(),

@@ -709,6 +709,13 @@ fn mesh_renderer(ed: &mut Editor, ui: &mut Ui, id: EntityId) {
             }
         });
         ui.end_row();
+        if let Some(ruta) = crate::textura::modelo_de(ed, id) {
+            ui.label("");
+            if ui.add_enabled(!ed.is_playing(), egui::Button::new("Texturizar…")).on_hover_text("Pintar sus texturas en el modo Texturizado").clicked() {
+                ed.texturizar = Some((ruta, Some(id)));
+            }
+            ui.end_row();
+        }
         material_fields(ui, &mut mr.material, ed.scene.env.global_shading.model.is_some());
         crate::normal_ui::filas(ui, &mut mr.material, normal_info.as_ref(), generando, &root);
         ui.label("Proyecta sombras");

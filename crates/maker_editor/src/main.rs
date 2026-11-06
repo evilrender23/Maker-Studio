@@ -20,6 +20,7 @@ mod iluminacion_ui;
 mod importar;
 mod pixel_icons;
 mod postproceso_ui;
+mod textura;
 mod prefs;
 mod theme;
 mod titlebar;
@@ -56,6 +57,7 @@ const USAGE: &str = "Uso: maker-studio [PROYECTO] [opciones]
   --agent-panel            muestra el panel del agente sin enviar nada
   --actualizar             busca y compila la última versión de GitHub (copias instaladas)
   --version                commit y rama de esta copia
+  textura …                modo Texturizado sin ventana (`maker-studio textura` para la ayuda)
 ";
 
 fn parse_key(s: &str) -> Option<Key> {
@@ -87,6 +89,21 @@ fn main() -> eframe::Result<()> {
                 Ok(()) => std::process::exit(0),
                 Err(e) => {
                     eprintln!("No se pudo actualizar: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some("textura") => {
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            // Sin pánico si la salida se corta (`| head`).
+            use std::io::Write;
+            match maker_textura::cli::ejecutar(&args) {
+                Ok(s) => {
+                    let _ = writeln!(std::io::stdout(), "{s}");
+                    std::process::exit(0);
+                }
+                Err(e) => {
+                    let _ = writeln!(std::io::stderr(), "{e}");
                     std::process::exit(1);
                 }
             }

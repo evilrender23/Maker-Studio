@@ -220,7 +220,14 @@ impl eframe::App for MakerApp {
         self.set_title(&ctx);
 
         // Cerrar con cambios sin guardar.
-        if ctx.input(|i| i.viewport().close_requested()) && !self.quitting && self.ed.as_ref().is_some_and(|e| e.dirty) {
+        if ctx.input(|i| i.viewport().close_requested())
+            && !self.quitting
+            && let Some(m) = self.ed.as_mut().and_then(|e| e.textura.as_mut())
+            && m.t.s.modified
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            m.pedir_salida();
+        } else if ctx.input(|i| i.viewport().close_requested()) && !self.quitting && self.ed.as_ref().is_some_and(|e| e.dirty) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.close_prompt = true;
         }
@@ -263,7 +270,13 @@ impl eframe::App for MakerApp {
         }
         ed.auto_build = self.prefs.compilar_auto;
         ed.tick(dt);
-        shortcuts(ed, &ctx);
+        crate::textura::procesar(ed, &self.rs);
+        crate::textura::ventana_pedido(ed, &ctx, &self.rs);
+        if ed.textura.is_some() {
+            crate::textura::atajos(ed, &ctx);
+        } else {
+            shortcuts(ed, &ctx);
+        }
 
         // Modo agente: estado por proyecto, eventos de la CLI e integración tras cada turno.
         let modo = self.prefs.modo_agente;
@@ -285,7 +298,7 @@ impl eframe::App for MakerApp {
         let mut panel_agente = modo.then_some(self.prefs.panel_agente);
         egui::Panel::top("toolbar")
             .frame(egui::Frame::new().fill(theme::CHROME).inner_margin(egui::Margin::symmetric(8, 4)).stroke(egui::Stroke::new(1.0, theme::STROKE4)))
-            .show(ui, |ui| toolbar(ed, ui, panel_agente.as_mut()));
+            .show(ui, |ui| if ed.textura.is_some() { crate::textura::barra(ed, ui, &self.rs) } else { toolbar(ed, ui, panel_agente.as_mut()) });
         if let Some(v) = panel_agente
             && v != self.prefs.panel_agente
         {
@@ -304,25 +317,33 @@ impl eframe::App for MakerApp {
                 });
             });
         });
-        egui::Panel::left("hierarchy").frame(theme::sidebar_frame()).resizable(true).default_size(250.0).min_size(170.0).show(ui, |ui| panels::hierarchy(ed, ui));
         if modo
             && self.prefs.panel_agente
             && let Some(g) = &mut self.agente
         {
+            if ed.textura.is_none() {
+                egui::Panel::left("hierarchy").frame(theme::sidebar_frame()).resizable(true).default_size(250.0).min_size(170.0).show(ui, |ui| panels::hierarchy(ed, ui));
+            }
             egui::Panel::right("agente").frame(theme::sidebar_frame()).resizable(true).default_size(400.0).min_size(320.0).max_size(760.0).show(ui, |ui| crate::agente::panel::mostrar(g, ed, &self.prefs, ui));
+        } else if ed.textura.is_none() {
+            egui::Panel::left("hierarchy").frame(theme::sidebar_frame()).resizable(true).default_size(250.0).min_size(170.0).show(ui, |ui| panels::hierarchy(ed, ui));
         }
-        egui::Panel::right("inspector").frame(theme::sidebar_frame()).resizable(true).default_size(330.0).min_size(240.0).show(ui, |ui| panels::inspector(ed, ui));
-        egui::Panel::bottom("bottom").frame(theme::sidebar_frame()).resizable(true).default_size(240.0).min_size(110.0).show(ui, |ui| panels::bottom(ed, ui, &self.rs));
-        egui::CentralPanel::no_frame().show(ui, |ui| {
-            egui::Frame::new().fill(theme::CHROME).inner_margin(egui::Margin::symmetric(6, 4)).show(ui, |ui| {
-                crate::viewport::show(ed, ui, &self.rs);
+        if ed.textura.is_some() {
+            crate::textura::mostrar(ed, ui, &self.rs);
+        } else {
+            egui::Panel::right("inspector").frame(theme::sidebar_frame()).resizable(true).default_size(330.0).min_size(240.0).show(ui, |ui| panels::inspector(ed, ui));
+            egui::Panel::bottom("bottom").frame(theme::sidebar_frame()).resizable(true).default_size(240.0).min_size(110.0).show(ui, |ui| panels::bottom(ed, ui, &self.rs));
+            egui::CentralPanel::no_frame().show(ui, |ui| {
+                egui::Frame::new().fill(theme::CHROME).inner_margin(egui::Margin::symmetric(6, 4)).show(ui, |ui| {
+                    crate::viewport::show(ed, ui, &self.rs);
+                });
             });
-        });
-        crate::viewport::capturar_raton(ed, &ctx);
-        if ed.ventana_escenas {
-            crate::escenas_ui::ventana(ed, &ctx);
+            crate::viewport::capturar_raton(ed, &ctx);
+            if ed.ventana_escenas {
+                crate::escenas_ui::ventana(ed, &ctx);
+            }
+            crate::estilo_visual_ui::ventana(ed, &ctx);
         }
-        crate::estilo_visual_ui::ventana(ed, &ctx);
 
         // Confirmar ediciones del inspector cuando termina la interacción.
         if ed.pending_edit.is_some() && !ctx.input(|i| i.pointer.any_down()) && !ctx.egui_wants_keyboard_input() {
@@ -611,6 +632,12 @@ fn menu_bar(ed: &mut Editor, ui: &mut Ui, upd: &crate::update::Actualizador, upd
                 ed.ventana_escenas = true;
             }
             ui.separator();
+            if ui.button("Texturizar asset…").clicked() {
+                ui.close();
+                if let Some(p) = rfd::FileDialog::new().set_directory(&ed.project.root).add_filter("Modelos 3D", &maker_textura::sesion::MALLAS).add_filter("Proyecto de texturizado", &["tcraft"]).pick_file() {
+                    ed.texturizar = Some((p, None));
+                }
+            }
             if ui.button("Ejecutar en ventana aparte").clicked() {
                 ed.run_standalone();
             }

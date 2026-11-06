@@ -186,6 +186,7 @@ fn entrada(ag: &mut Agente, ed: &mut Editor, prefs: &Preferencias, ui: &mut Ui) 
             }
         }
     });
+    adjuntos_ui(ag, ed, ui, ocupado);
     ui.add_space(2.0);
     let shift_enter = egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter);
     let enviar_tecla = ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
@@ -195,6 +196,16 @@ fn entrada(ag: &mut Agente, ed: &mut Editor, prefs: &Preferencias, ui: &mut Ui) 
         egui::TextEdit::multiline(&mut ag.entrada).desired_rows(3).desired_width(f32::INFINITY).return_key(shift_enter).hint_text(pista),
     );
     let mut enviar = r.has_focus() && enviar_tecla;
+    // Soltar en el cuadro de texto un modelo de Contenido o de la Biblioteca.
+    if let Some(a) = r.dnd_release_payload::<crate::viewport::AssetDrag>() {
+        let p = maker_engine::biblioteca::resolve(&a.0, Some(&ed.project.root));
+        if p.exists() && !ag.adjuntos.contains(&p) {
+            ag.adjuntos.push(p);
+        }
+    }
+    if r.dnd_hover_payload::<crate::viewport::AssetDrag>().is_some() {
+        ui.painter().rect_stroke(r.rect, 3.0, Stroke::new(2.0, theme::ACCENT), egui::StrokeKind::Inside);
+    }
     ui.horizontal(|ui| {
         if let Some(t) = &ag.turno {
             ui.spinner();
@@ -401,4 +412,89 @@ fn linea_rica(ui: &mut Ui, t: &str) {
     }
     job.wrap.max_width = ui.available_width();
     ui.add(egui::Label::new(job).wrap());
+}
+
+/// Adjuntos del próximo mensaje: los añadidos, «Adjuntar», archivos soltados sobre el panel e
+/// imágenes pegadas con Ctrl+V.
+fn adjuntos_ui(ag: &mut Agente, ed: &Editor, ui: &mut Ui, ocupado: bool) {
+    let raiz = ed.project.root.clone();
+    // Archivos soltados desde el sistema o imágenes pegadas con el puntero sobre el panel.
+    let encima = ui.ctx().pointer_hover_pos().is_some_and(|p| ui.max_rect().expand(400.0).contains(p) && ui.clip_rect().x_range().contains(p.x));
+    if encima && !ocupado {
+        let (soltados, pegadas) = ui.input(|i| {
+            let s: Vec<std::path::PathBuf> = i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect();
+            let p: Vec<egui::ColorImage> = i.events.iter().filter_map(|e| if let egui::Event::PasteImage(img) = e { Some((**img).clone()) } else { None }).collect();
+            (s, p)
+        });
+        for p in soltados {
+            if !ag.adjuntos.contains(&p) {
+                ag.adjuntos.push(p);
+            }
+        }
+        for img in pegadas {
+            match super::adjuntos::guardar_imagen(&img) {
+                Ok(p) => ag.adjuntos.push(p),
+                Err(e) => maker_engine::log::error("agente", format!("no se pudo guardar la imagen pegada: {e}")),
+            }
+        }
+    }
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let mut quitar = None;
+        for (i, a) in ag.adjuntos.iter().enumerate() {
+            let texto = format!("{}  ✕", super::adjuntos::nombre(a));
+            let b = egui::Button::new(RichText::new(texto).small().color(theme::TEXT1)).fill(theme::CARD).stroke(Stroke::new(1.0, theme::STROKE2)).corner_radius(CornerRadius::same(9));
+            if ui.add_enabled(!ocupado, b).on_hover_text(a.display().to_string()).clicked() {
+                quitar = Some(i);
+            }
+        }
+        if let Some(i) = quitar {
+            ag.adjuntos.remove(i);
+        }
+        ui.add_enabled_ui(!ocupado, |ui| {
+            let id = ui.make_persistent_id("agente-adjuntar");
+            ui.menu_button(RichText::new("+ Adjuntar").small(), |ui| {
+                ui.set_min_width(320.0);
+                let (mut ruta, mut filtro): (String, String) = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+                ui.horizontal(|ui| {
+                    let r = ui.add(egui::TextEdit::singleline(&mut ruta).hint_text("Ruta de un archivo o carpeta").desired_width(250.0));
+                    let ok = super::adjuntos::normalizar(&ruta, &raiz);
+                    let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if (ui.add_enabled(ok.is_some(), egui::Button::new("Añadir")).clicked() || enter)
+                        && let Some(p) = ok
+                    {
+                        if !ag.adjuntos.contains(&p) {
+                            ag.adjuntos.push(p);
+                        }
+                        ruta.clear();
+                    }
+                });
+                ui.separator();
+                ui.add(egui::TextEdit::singleline(&mut filtro).hint_text("Buscar en el proyecto…").desired_width(f32::INFINITY));
+                let f = filtro.to_lowercase();
+                let mut archivos = Vec::new();
+                maker_engine::project::walk(&raiz, &mut |p| {
+                    let rel = p.strip_prefix(&raiz).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+                    if f.is_empty() || rel.to_lowercase().contains(&f) {
+                        archivos.push((rel, p.to_path_buf()));
+                    }
+                });
+                egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                    for (rel, p) in archivos.into_iter().take(300) {
+                        let ya = ag.adjuntos.contains(&p);
+                        if ui.selectable_label(ya, rel).clicked() {
+                            if ya {
+                                ag.adjuntos.retain(|a| *a != p);
+                            } else {
+                                ag.adjuntos.push(p);
+                            }
+                        }
+                    }
+                });
+                ui.data_mut(|d| d.insert_temp(id, (ruta, filtro)));
+            })
+            .response
+            .on_hover_text("También puedes soltar archivos aquí o pegar una imagen (Ctrl+V)");
+        });
+    });
 }

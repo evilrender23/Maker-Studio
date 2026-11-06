@@ -2,6 +2,7 @@
 //! proyecto abierto. Cada turno es un proceso en segundo plano cuya salida JSONL llega por un
 //! canal; al terminar se recargan la escena, el script abierto y la biblioteca de scripts.
 
+pub mod adjuntos;
 pub mod cli;
 pub mod contexto;
 pub mod eventos;
@@ -73,6 +74,8 @@ pub struct Agente {
     pub turno: Option<Turno>,
     pub entrada: String,
     pub chips: Vec<Chip>,
+    /// Archivos adjuntos al próximo mensaje.
+    pub adjuntos: Vec<PathBuf>,
     pub renombrando: Option<String>,
     pub catalogo: Catalogo,
     ctx: egui::Context,
@@ -95,6 +98,7 @@ impl Agente {
             turno: None,
             entrada: String::new(),
             chips: vec![Chip::Escena],
+            adjuntos: Vec::new(),
             renombrando: None,
             catalogo,
             ctx: ctx.clone(),
@@ -274,11 +278,20 @@ impl Agente {
             previo.push(format!("<resumen_de_la_conversacion_anterior>\n{sem}\n</resumen_de_la_conversacion_anterior>"));
         }
         let previo = (!previo.is_empty()).then(|| previo.join("\n\n"));
-        let mensaje = contexto::componer(ed, &chips, &texto, previo.as_deref());
-        let p = Peticion { mensaje, modelo: s.modelo.clone(), esfuerzo: s.esfuerzo.clone(), permisos: s.permisos, reanudar: s.id_nativo.clone(), sistema };
+        let adj: Vec<PathBuf> = std::mem::take(&mut self.adjuntos).into_iter().filter(|a| a.exists()).collect();
+        let raiz = ed.project.root.clone();
+        let mut mensaje = contexto::componer(ed, &chips, &texto, previo.as_deref());
+        if !adj.is_empty() {
+            mensaje = format!("{}\n\n{mensaje}", adjuntos::bloque(&adj, &raiz));
+        }
+        let imagenes = if s.backend == Backend::Codex { adj.iter().filter(|a| adjuntos::es_imagen(a)).cloned().collect() } else { Vec::new() };
+        let carpetas = adjuntos::carpetas_extra(&adj, &raiz);
+        let p = Peticion { mensaje, modelo: s.modelo.clone(), esfuerzo: s.esfuerzo.clone(), permisos: s.permisos, reanudar: s.id_nativo.clone(), sistema, imagenes, carpetas };
         {
             let s = self.sesion_mut();
-            s.mensajes.push(Mensaje::Usuario { texto: texto.clone(), contexto: chips.iter().map(|c| c.nombre().to_string()).collect() });
+            let mut contexto: Vec<String> = chips.iter().map(|c| c.nombre().to_string()).collect();
+            contexto.extend(adj.iter().map(|a| adjuntos::nombre(a)));
+            s.mensajes.push(Mensaje::Usuario { texto: texto.clone(), contexto });
             s.titular(&texto);
             s.actualizada = sesion::ahora();
         }
@@ -321,7 +334,7 @@ impl Agente {
             _ => (PEDIR_RESUMEN.to_string(), Clase::Resumir),
         };
         self.sesion_mut().mensajes.push(Mensaje::Nota { texto: "Compactando la conversación…".into() });
-        let p = Peticion { mensaje, modelo: s.modelo.clone(), esfuerzo: s.esfuerzo.clone(), permisos: if clase == Clase::Compactar { s.permisos } else { cli::Permisos::Lectura }, reanudar: Some(id), sistema: None };
+        let p = Peticion { mensaje, modelo: s.modelo.clone(), esfuerzo: s.esfuerzo.clone(), permisos: if clase == Clase::Compactar { s.permisos } else { cli::Permisos::Lectura }, reanudar: Some(id), sistema: None, ..Default::default() };
         self.lanzar(ed, &exe, p, clase, false);
     }
 

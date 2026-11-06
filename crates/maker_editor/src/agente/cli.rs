@@ -486,6 +486,10 @@ pub struct Peticion {
     pub reanudar: Option<String>,
     /// Instrucciones de sistema (solo Claude, por `--append-system-prompt`).
     pub sistema: Option<String>,
+    /// Imágenes adjuntas (Codex las recibe como imagen con `--image`).
+    pub imagenes: Vec<PathBuf>,
+    /// Carpetas de fuera del proyecto con adjuntos (`--add-dir` en Claude y Antigravity).
+    pub carpetas: Vec<PathBuf>,
 }
 
 /// Argumentos de la orden (sin el ejecutable) y el texto que va por stdin.
@@ -515,6 +519,9 @@ pub fn argumentos(b: Backend, p: &Peticion) -> (Vec<String>, Option<String>) {
             if let Some(s) = &p.sistema {
                 add(&["--append-system-prompt", s]);
             }
+            for d in &p.carpetas {
+                a.push(format!("--add-dir={}", d.display()));
+            }
             (a, Some(p.mensaje.clone()))
         }
         Backend::Codex => {
@@ -539,6 +546,10 @@ pub fn argumentos(b: Backend, p: &Peticion) -> (Vec<String>, Option<String>) {
                 a.push("-c".into());
                 a.push(format!("model_reasoning_effort=\"{esfuerzo}\""));
             }
+            // Con `=`: `--image` admite varios valores y se tragaría el `-` final.
+            for i in &p.imagenes {
+                a.push(format!("--image={}", i.display()));
+            }
             a.push("-".into());
             (a, Some(p.mensaje.clone()))
         }
@@ -557,6 +568,9 @@ pub fn argumentos(b: Backend, p: &Peticion) -> (Vec<String>, Option<String>) {
             }
             if let Some(id) = &p.reanudar {
                 add(&["--conversation", id]);
+            }
+            for d in &p.carpetas {
+                a.push(format!("--add-dir={}", d.display()));
             }
             (a, None)
         }
@@ -659,7 +673,7 @@ mod tests {
 
     #[test]
     fn ordenes_por_cli() {
-        let p = Peticion { mensaje: "hola".into(), modelo: "haiku".into(), esfuerzo: "low".into(), permisos: Permisos::Edicion, reanudar: Some("abc".into()), sistema: Some("primer".into()) };
+        let p = Peticion { mensaje: "hola".into(), modelo: "haiku".into(), esfuerzo: "low".into(), permisos: Permisos::Edicion, reanudar: Some("abc".into()), sistema: Some("primer".into()), ..Default::default() };
         let (a, stdin) = argumentos(Backend::Claude, &p);
         assert_eq!(stdin.as_deref(), Some("hola"));
         for x in ["--model haiku", "--effort low", "--permission-mode acceptEdits", "--resume abc", "--append-system-prompt primer"] {
@@ -729,5 +743,16 @@ mod tests {
         assert_eq!(c.ventana, Some(475_000));
         assert_eq!(c.usado, Some(14_983));
         assert_eq!(medida_claude("sin tokens"), None);
+    }
+
+    #[test]
+    fn adjuntos_en_la_orden() {
+        let p = Peticion { mensaje: "m".into(), imagenes: vec![PathBuf::from("/x/a.png")], carpetas: vec![PathBuf::from("/x")], ..Default::default() };
+        let (a, _) = argumentos(Backend::Codex, &p);
+        let i = a.iter().position(|x| x == "--image=/x/a.png").unwrap();
+        assert_eq!(a.last().map(String::as_str), Some("-"));
+        assert!(i < a.len() - 1);
+        assert!(argumentos(Backend::Claude, &p).0.contains(&"--add-dir=/x".to_string()));
+        assert!(argumentos(Backend::Antigravity, &p).0.contains(&"--add-dir=/x".to_string()));
     }
 }

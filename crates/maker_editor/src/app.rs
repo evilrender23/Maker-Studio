@@ -319,6 +319,9 @@ impl eframe::App for MakerApp {
             });
         });
         crate::viewport::capturar_raton(ed, &ctx);
+        if ed.ventana_escenas {
+            crate::escenas_ui::ventana(ed, &ctx);
+        }
 
         // Confirmar ediciones del inspector cuando termina la interacción.
         if ed.pending_edit.is_some() && !ctx.input(|i| i.pointer.any_down()) && !ctx.egui_wants_keyboard_input() {
@@ -583,12 +586,11 @@ fn menu_bar(ed: &mut Editor, ui: &mut Ui, upd: &crate::update::Actualizador, upd
                     log::error("editor", e);
                 }
             }
-            if ui.button("Hacer esta escena la principal").clicked() {
-                ed.project.file.main_scene = ed.project.relative(&ed.scene_path);
-                match ed.project.save() {
-                    Ok(()) => ed.status = "Escena principal actualizada".into(),
-                    Err(e) => log::error("editor", e),
-                }
+            if ui.button("Hacer esta escena la principal").on_hover_text("La pone la primera del orden de escenas").clicked() {
+                crate::escenas_ui::hacer_inicial(ed);
+            }
+            if ui.button("Orden de escenas…").clicked() {
+                ed.ventana_escenas = true;
             }
             ui.separator();
             if ui.button("Ejecutar en ventana aparte").clicked() {
@@ -695,6 +697,9 @@ fn menu_bar(ed: &mut Editor, ui: &mut Ui, upd: &crate::update::Actualizador, upd
 fn toolbar(ed: &mut Editor, ui: &mut Ui, panel_agente: Option<&mut bool>) {
     ui.horizontal(|ui| {
         ui.label(RichText::new(format!("{} / {}", ed.project.name(), ed.scene_name())).color(theme::TEXT2));
+        if let Some(r) = ed.escena_en_juego() {
+            ui.label(RichText::new(format!("▶ {}", maker_engine::escenas::nombre(r))).color(theme::ACCENT)).on_hover_text(format!("En juego: {r} (Stop vuelve a la abierta)"));
+        }
         let center = ui.available_width() * 0.5 - 90.0;
         ui.add_space((center - ui.min_rect().width()).max(8.0));
         let playing = ed.is_playing();
@@ -706,6 +711,10 @@ fn toolbar(ed: &mut Editor, ui: &mut Ui, panel_agente: Option<&mut bool>) {
         };
         if ui.add(play_btn.min_size(egui::vec2(84.0, 24.0))).on_hover_text("F5 / Ctrl+P").clicked() {
             if playing { ed.stop() } else { ed.play() }
+        }
+        let inicio = egui::Button::image(crate::icons::image(ui.ctx(), crate::icons::Icon::Inicio, if playing { theme::TEXT4 } else { theme::ACCENT }));
+        if ui.add_enabled(!playing, inicio).on_hover_text("Jugar desde la primera escena").clicked() {
+            ed.play_desde_inicio();
         }
         if ui.add_enabled(playing, egui::Button::selectable(paused, "❚❚ Pausa")).clicked() {
             ed.toggle_pause();

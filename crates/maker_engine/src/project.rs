@@ -24,6 +24,24 @@ pub struct ProjectFile {
     /// Capturar el ratón al jugar (editor en Play y juego exportado).
     #[serde(default = "si")]
     pub capturar_raton: bool,
+    /// Orden de escenas: la primera activa es la de arranque. Los proyectos
+    /// antiguos solo tienen `main_scene` y se migran a `[main_scene]` al abrir;
+    /// `main_scene` se mantiene igual a la de arranque por compatibilidad.
+    #[serde(default)]
+    pub escenas: Vec<crate::escenas::EntradaEscena>,
+}
+
+impl ProjectFile {
+    /// Migra `main_scene` a la lista si está vacía y vuelve a poner
+    /// `main_scene` igual a la primera escena activa.
+    pub fn normalizar(&mut self) {
+        if self.escenas.is_empty() && !self.main_scene.trim().is_empty() {
+            self.escenas.push(crate::escenas::EntradaEscena::nueva(&self.main_scene));
+        }
+        if let Some(e) = self.escenas.iter().find(|e| e.activa) {
+            self.main_scene = e.ruta.clone();
+        }
+    }
 }
 
 fn si() -> bool {
@@ -65,20 +83,33 @@ impl Project {
         let root = if root.file_name().is_some_and(|n| n == PROJECT_FILE) { root.parent().unwrap_or(root) } else { root };
         let pf = root.join(PROJECT_FILE);
         let txt = std::fs::read_to_string(&pf).map_err(|e| format!("{}: {e}", pf.display()))?;
-        let file: ProjectFile = serde_json::from_str(&txt).map_err(|e| format!("{}: {e}", pf.display()))?;
+        let mut file: ProjectFile = serde_json::from_str(&txt).map_err(|e| format!("{}: {e}", pf.display()))?;
+        file.normalizar();
         Ok(Project { root: root.canonicalize().unwrap_or(root.to_path_buf()), file })
     }
 
     pub fn save(&self) -> Result<(), String> {
-        let txt = serde_json::to_string_pretty(&self.file).map_err(|e| e.to_string())?;
+        let mut file = self.file.clone();
+        file.normalizar();
+        let txt = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
         std::fs::write(self.root.join(PROJECT_FILE), txt).map_err(|e| e.to_string())
     }
 
     pub fn name(&self) -> &str {
         &self.file.name
     }
+    /// Escena de arranque: la primera activa del orden de escenas (o
+    /// `main_scene` si la lista no tiene ninguna activa).
     pub fn main_scene_path(&self) -> PathBuf {
-        self.root.join(&self.file.main_scene)
+        self.root.join(self.escena_inicial())
+    }
+    pub fn escena_inicial(&self) -> String {
+        self.file.escenas.iter().find(|e| e.activa).map(|e| e.ruta.clone()).unwrap_or_else(|| self.file.main_scene.clone())
+    }
+    /// Rutas de las escenas activas, en orden (lo que ven los scripts).
+    pub fn escenas_activas(&self) -> Vec<String> {
+        let v = crate::escenas::activas(&self.file.escenas);
+        if v.is_empty() { vec![self.escena_inicial()] } else { v }
     }
     pub fn scripts_dir(&self) -> PathBuf {
         self.root.join("scripts")
@@ -119,8 +150,17 @@ impl Project {
         }
         let project = Project {
             root: root.canonicalize().unwrap_or(root.to_path_buf()),
-            file: ProjectFile { name: name.into(), main_scene: "scenes/main.mscene".into(), engine_version: env!("CARGO_PKG_VERSION").into(), capturar_raton: true, tema_ui: String::new() },
+            file: ProjectFile {
+                name: name.into(),
+                main_scene: "scenes/main.mscene".into(),
+                engine_version: env!("CARGO_PKG_VERSION").into(),
+                capturar_raton: true,
+                tema_ui: String::new(),
+                escenas: Vec::new(),
+            },
         };
+        let mut project = project;
+        project.file.normalizar();
         project.save()?;
         let crate_name = sanitize_crate_name(name);
         let api = maker_api_path().to_string_lossy().replace('\\', "/");
@@ -131,8 +171,9 @@ impl Project {
         write(&project.root.join(".gitignore"), "scripts/target/\nexport/\n")?;
         let scene = if demo { demo_scene() } else { Scene::starter() };
         scene.save(&project.main_scene_path())?;
-        let mut project = project;
         if demo {
+            // Dos escenas en el orden: la demo y el escaparate de la biblioteca (N pasa a la siguiente).
+            project.file.escenas.push(crate::escenas::EntradaEscena::nueva("scenes/biblioteca.mscene"));
             demo_ui(&mut project)?;
             library_scene().save(&project.root.join("scenes/biblioteca.mscene"))?;
             for (name, src) in crate::postproceso::EXAMPLES {
@@ -288,8 +329,15 @@ pub fn demo_scene() -> Scene {
         s.env.post.push(PostEffect { enabled: false, ..PostEffect::new(PostKind::Custom(CustomEffect { path, ..Default::default() })) });
     }
     demo_hud(&mut s);
+    cambio_de_escena(&mut s);
     s.update_transforms();
     s
+}
+
+/// Entidad con el script `SceneSwitcher` (N: siguiente escena del orden).
+fn cambio_de_escena(s: &mut Scene) {
+    let e = s.spawn("Cambio de escena");
+    s.insert(e, Scripts(vec![ScriptSlot { name: "SceneSwitcher".into(), enabled: true, ..Default::default() }]));
 }
 
 /// Hoja de estilos, tema y fuente de la interfaz de la demo (tema `neon`).
@@ -334,8 +382,8 @@ fn demo_hud(s: &mut Scene) {
     let vida = WidgetUi { clase: ClaseWidget::Barra(Barra { valor: 1.0, ..Default::default() }), ..Default::default() };
     hijo(s, hud, "Vida", RectUi::anclado([0.0, 0.0], [0.0, 0.0], [40.0, 96.0], [380.0, 26.0]), Some(vida));
     hijo(s, hud, "Radar", RectUi::anclado([1.0, 0.0], [1.0, 0.0], [-30.0, 30.0], [240.0, 240.0]), Some(WidgetUi::nuevo(TipoWidget::Personalizado)));
-    let ayuda = texto("Esc: pausa", "");
-    let mut ayuda_r = RectUi::anclado([0.0, 1.0], [0.0, 1.0], [40.0, -24.0], [400.0, 36.0]);
+    let ayuda = texto("Esc: pausa · N: siguiente escena", "");
+    let mut ayuda_r = RectUi::anclado([0.0, 1.0], [0.0, 1.0], [40.0, -24.0], [520.0, 36.0]);
     ayuda_r.opacidad = 0.7;
     let a = hijo(s, hud, "Ayuda", ayuda_r, Some(ayuda));
     if let Some(mut w) = s.get_mut::<WidgetUi>(a) {
@@ -487,6 +535,7 @@ pub fn library_scene() -> Scene {
     slot.props.insert("radius".into(), PropVal::Float(2.2));
     slot.props.insert("speed".into(), PropVal::Float(1.2));
     s.insert(hero, Scripts(vec![slot]));
+    cambio_de_escena(&mut s);
     s.update_transforms();
     s
 }
@@ -803,7 +852,27 @@ impl Hud {
     }
 }
 
-export_scripts!(Rotator, Bobber, PlayerController, CameraFollow, Paseante, Hud);
+/// Cambia de escena con N: la siguiente del orden de escenas (Archivo → Orden
+/// de escenas) y, tras la última, otra vez la primera.
+#[derive(Default)]
+pub struct SceneSwitcher;
+
+impl Script for SceneSwitcher {
+    fn start(&mut self, ctx: &mut Ctx) {
+        let i = ctx.scene_index().map_or("-".to_string(), |i| (i + 1).to_string());
+        ctx.log(format!("Escena {i} de {}: {} (N para cambiar)", ctx.scene_count(), ctx.scene_name()));
+    }
+    fn update(&mut self, ctx: &mut Ctx) {
+        if ctx.key_pressed(Key::N) {
+            match ctx.scene_index() {
+                Some(i) if i + 1 < ctx.scene_count() => ctx.next_scene(),
+                _ => ctx.load_scene_index(0),
+            };
+        }
+    }
+}
+
+export_scripts!(Rotator, Bobber, PlayerController, CameraFollow, Paseante, Hud, SceneSwitcher);
 "#;
 
 #[cfg(test)]
@@ -825,6 +894,26 @@ mod tests {
     }
 
     #[test]
+    fn old_projects_migrate_main_scene_to_scene_order() {
+        let mut f: ProjectFile = serde_json::from_str(r#"{"name":"Viejo","main_scene":"scenes/main.mscene"}"#).unwrap();
+        assert!(f.escenas.is_empty());
+        f.normalizar();
+        assert_eq!(f.escenas, [crate::escenas::EntradaEscena::nueva("scenes/main.mscene")]);
+        // La primera activa manda; main_scene se mantiene igual para versiones anteriores.
+        let mut f: ProjectFile = serde_json::from_str(
+            r#"{"name":"N","main_scene":"scenes/a.mscene","escenas":[{"ruta":"scenes/a.mscene","activa":false},{"ruta":"scenes/b.mscene"}]}"#,
+        )
+        .unwrap();
+        f.normalizar();
+        assert_eq!(f.main_scene, "scenes/b.mscene");
+        assert!(f.escenas[1].activa, "activa por defecto");
+        // Un archivo que falta se marca, no rompe nada.
+        let p = Project { root: std::env::temp_dir().join("maker-no-existe"), file: f };
+        assert!(crate::escenas::falta(&p.root, &p.escenas_activas()[0]));
+        assert_eq!(p.main_scene_path(), p.root.join("scenes/b.mscene"));
+    }
+
+    #[test]
     fn create_and_open_project() {
         let dir = std::env::temp_dir().join(format!("maker-proj-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -838,6 +927,14 @@ mod tests {
         let sphere = scene.find_by_name("Esfera").unwrap();
         assert_eq!(scene.get::<MeshRenderer>(sphere).unwrap().material.shading, ShadingModel::Hatching);
         assert_eq!(p2.scenes(), vec!["scenes/biblioteca.mscene".to_string(), "scenes/main.mscene".to_string()]);
+        // Orden de escenas: la demo arranca en main y N pasa al escaparate.
+        assert_eq!(p2.escenas_activas(), ["scenes/main.mscene", "scenes/biblioteca.mscene"]);
+        assert_eq!(p2.file.main_scene, "scenes/main.mscene");
+        for s in p2.escenas_activas() {
+            let e = Scene::load(&p2.root.join(&s)).unwrap();
+            let c = e.find_by_name("Cambio de escena").unwrap();
+            assert_eq!(e.get::<Scripts>(c).unwrap().0[0].name, "SceneSwitcher", "{s}");
+        }
         // Los efectos propios de ejemplo existen y la escena los referencia.
         let used = crate::postproceso::post_files_used([&scene.env]);
         assert_eq!(used.len(), 2);

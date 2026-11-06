@@ -3,9 +3,16 @@
 //! Orden de cada fotograma (el de Unity, que comparten Godot y Unreal):
 //! `start` pendientes → N × (`fixed_update` → física) → `update` →
 //! destrucciones diferidas → propagación de transforms.
+//!
+//! Cambio de escena: los scripts lo piden (`load_scene`, `next_scene`…), el
+//! fotograma termina entero en la escena actual y después el host llama a
+//! [`Runtime::aplicar_cambio_escena`], que carga la nueva y crea otra sesión
+//! (física y scripts nuevos) con la misma biblioteca. Nada se cambia mientras
+//! corre un script, así que no hay reentrada.
 
 use crate::animation::Animation;
 use crate::components::*;
+use crate::escenas::{self, Peticion};
 use crate::input::Input;
 use crate::log;
 use crate::physics::{FIXED_DT, Physics};
@@ -44,6 +51,12 @@ pub struct Runtime {
     pub time_scale: f32,
     /// Último modo de cursor pedido por un script (`None`: el del proyecto).
     pub cursor_mode: Option<maker_api::CursorMode>,
+    /// Escenas activas del orden de escenas (rutas relativas), lo que ven los scripts.
+    pub escenas: Vec<String>,
+    /// Escena que se está jugando (ruta relativa).
+    pub escena: Option<String>,
+    /// Escena pedida por un script en el último `tick`; se aplica con `aplicar_cambio_escena`.
+    pub cambio_escena: Option<String>,
 }
 
 /// Estado que ven las funciones del host durante una llamada a un script.
@@ -56,6 +69,9 @@ struct HostCtx<'a> {
     destroyed: Vec<EntityId>,
     source: String,
     cursor_mode: Option<maker_api::CursorMode>,
+    escenas: &'a [String],
+    escena: Option<&'a str>,
+    cambio: Option<String>,
 }
 
 impl Runtime {
@@ -68,8 +84,9 @@ impl Runtime {
     pub fn start_en(scene: &mut Scene, lib: Option<Arc<ScriptLib>>, raiz: Option<&std::path::Path>) -> Runtime {
         scene.update_transforms();
         let physics = Physics::build_en(scene, raiz);
+        let proyecto = raiz.and_then(|r| crate::project::Project::open(r).ok());
         let ui = match raiz {
-            Some(r) => SistemaUi::del_proyecto(r, &crate::project::Project::open(r).map(|p| p.file.tema_ui).unwrap_or_default()),
+            Some(r) => SistemaUi::del_proyecto(r, proyecto.as_ref().map(|p| p.file.tema_ui.as_str()).unwrap_or_default()),
             None => SistemaUi::default(),
         };
         let mut rt = Runtime {
@@ -86,6 +103,9 @@ impl Runtime {
             entrada: Input::default(),
             time_scale: 1.0,
             cursor_mode: None,
+            escenas: proyecto.as_ref().map(|p| p.escenas_activas()).unwrap_or_default(),
+            escena: None,
+            cambio_escena: None,
         };
         let mut slots: Vec<(EntityId, Scripts)> = {
             let mut q = scene.world.query::<(&EntityId, &Scripts)>();
@@ -123,6 +143,55 @@ impl Runtime {
         self.instances.push(Instance { entity: id, desc: di, ptr, started: false, failed: false });
     }
 
+    /// Indica qué escena se está jugando (ruta relativa al proyecto).
+    pub fn fijar_escena(&mut self, ruta: &str) {
+        self.escena = Some(escenas::normalizar(ruta));
+    }
+
+    /// Aplica el cambio de escena pedido en el último `tick`: carga la escena,
+    /// reinicia física y scripts (sesión nueva con la misma biblioteca) y la
+    /// deja en `scene`. Devuelve la ruta cargada; si la carga falla, avisa y
+    /// sigue la escena actual.
+    pub fn aplicar_cambio_escena(&mut self, scene: &mut Scene) -> Option<String> {
+        self.aplicar_cambio_escena_con(scene, |_| None)
+    }
+
+    /// Como [`Runtime::aplicar_cambio_escena`], pero `en_memoria` puede dar la
+    /// escena en lugar de leerla del disco (el editor pasa la abierta, con sus
+    /// cambios sin guardar).
+    pub fn aplicar_cambio_escena_con(&mut self, scene: &mut Scene, en_memoria: impl FnOnce(&str) -> Option<Scene>) -> Option<String> {
+        let ruta = self.cambio_escena.take()?;
+        let Some(raiz) = self.project_root.clone() else {
+            log::warn("motor", format!("cambio a {ruta}: sin proyecto"));
+            return None;
+        };
+        let cargada = match en_memoria(&ruta) {
+            Some(s) => Ok(s),
+            None => Scene::load(&raiz.join(&ruta)),
+        };
+        let mut nueva = match cargada {
+            Ok(s) => s,
+            Err(e) => {
+                log::error("motor", format!("no se pudo cargar la escena {ruta}: {e}"));
+                return None;
+            }
+        };
+        ui::plantilla::sincronizar_todas(&mut nueva, &raiz);
+        let antes = self.escena.clone().unwrap_or_default();
+        log::info("motor", format!("escena: {} → {}", escenas::nombre(&antes), escenas::nombre(&ruta)));
+        let mut rt = Runtime::start_en(&mut nueva, self.lib.clone(), Some(&raiz));
+        rt.ui.recursos = self.ui.recursos.clone();
+        rt.escenas = std::mem::take(&mut self.escenas);
+        rt.fijar_escena(&ruta);
+        rt.cursor_mode = self.cursor_mode;
+        rt.time_scale = self.time_scale;
+        rt.paused = self.paused;
+        // Primero se destruyen los scripts de la escena anterior, luego la escena.
+        *self = rt;
+        *scene = nueva;
+        Some(ruta)
+    }
+
     pub fn script_count(&self) -> usize {
         self.instances.len()
     }
@@ -139,7 +208,19 @@ impl Runtime {
         self.ui.procesar_entrada(scene, input);
         let mut entrada = std::mem::take(&mut self.entrada);
         self.ui.filtrar(input, &mut entrada);
-        let mut ctx = HostCtx { scene, physics: &mut self.physics, input: &entrada, ui: &mut self.ui, time_scale: self.time_scale, destroyed: Vec::new(), source: String::new(), cursor_mode: None };
+        let mut ctx = HostCtx {
+            scene,
+            physics: &mut self.physics,
+            input: &entrada,
+            ui: &mut self.ui,
+            time_scale: self.time_scale,
+            destroyed: Vec::new(),
+            source: String::new(),
+            cursor_mode: None,
+            escenas: &self.escenas,
+            escena: self.escena.as_deref(),
+            cambio: None,
+        };
         let api = host_api(&mut ctx);
         // Todo acceso posterior pasa por el mismo puntero que ven los scripts.
         let ctx = unsafe { &mut *(api.ctx as *mut HostCtx) };
@@ -223,6 +304,10 @@ impl Runtime {
         ctx.scene.update_transforms();
         if let Some(m) = ctx.cursor_mode {
             self.cursor_mode = Some(m);
+        }
+        // La última petición del fotograma gana; el host la aplica al acabar.
+        if let Some(c) = ctx.cambio.take() {
+            self.cambio_escena = Some(c);
         }
         // Animación después de los scripts (que pueden cambiar de clip).
         self.animation.update(ctx.scene, self.project_root.as_deref(), dt, |_| true);
@@ -318,6 +403,14 @@ fn host_api(ctx: &mut HostCtx) -> HostApi {
         ui_pointer_over: h_ui_pointer_over,
         ui_set_theme: h_ui_set_theme,
         set_time_scale: h_set_time_scale,
+        load_scene: h_load_scene,
+        load_scene_index: h_load_scene_index,
+        next_scene: h_next_scene,
+        previous_scene: h_previous_scene,
+        reload_scene: h_reload_scene,
+        scene_index: h_scene_index,
+        scene_count: h_scene_count,
+        scene_path: h_scene_path,
     }
 }
 
@@ -644,6 +737,52 @@ unsafe extern "C" fn h_ui_set_theme(c: *mut c_void, p: *const u8, n: usize) {
     c.ui.marcar_sucio();
 }
 
+// ─────────────────────────── escenas ───────────────────────────
+
+fn pedir_escena(c: &mut HostCtx, p: Peticion, funcion: &str) -> bool {
+    match escenas::resolver(c.escenas, c.escena, &p) {
+        Ok(r) => {
+            c.cambio = Some(r);
+            true
+        }
+        Err(e) => {
+            log::warn("script", format!("{funcion}: {e}"));
+            false
+        }
+    }
+}
+unsafe extern "C" fn h_load_scene(c: *mut c_void, p: *const u8, n: usize) -> bool {
+    let c = unsafe { cx(c) };
+    let nombre = unsafe { texto(p, n) }.into_owned();
+    pedir_escena(c, Peticion::Nombre(nombre), "load_scene")
+}
+unsafe extern "C" fn h_load_scene_index(c: *mut c_void, i: i64) -> bool {
+    pedir_escena(unsafe { cx(c) }, Peticion::Indice(i), "load_scene_index")
+}
+unsafe extern "C" fn h_next_scene(c: *mut c_void) -> bool {
+    pedir_escena(unsafe { cx(c) }, Peticion::Siguiente, "next_scene")
+}
+unsafe extern "C" fn h_previous_scene(c: *mut c_void) -> bool {
+    pedir_escena(unsafe { cx(c) }, Peticion::Anterior, "previous_scene")
+}
+unsafe extern "C" fn h_reload_scene(c: *mut c_void) {
+    pedir_escena(unsafe { cx(c) }, Peticion::Recargar, "reload_scene");
+}
+unsafe extern "C" fn h_scene_index(c: *mut c_void) -> i64 {
+    let c = unsafe { cx(c) };
+    c.escena.and_then(|e| escenas::indice(c.escenas, e)).map_or(-1, |i| i as i64)
+}
+unsafe extern "C" fn h_scene_count(c: *mut c_void) -> u32 {
+    unsafe { cx(c) }.escenas.len() as u32
+}
+unsafe extern "C" fn h_scene_path(c: *mut c_void, buf: *mut u8, cap: usize) -> usize {
+    let t = unsafe { cx(c) }.escena.unwrap_or("").as_bytes();
+    if !buf.is_null() {
+        unsafe { std::ptr::copy_nonoverlapping(t.as_ptr(), buf, t.len().min(cap)) };
+    }
+    t.len()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -801,7 +940,107 @@ mod tests {
         }
     }
 
-    maker_api::script_library!(TEST_LIB; Spinner, Spawner, Panicker, Toonify, Dancer, MenuCursor, GlobalToon, Hud);
+    /// Viaja por el orden de escenas según su propiedad `accion`:
+    /// 1 = a «nivel2» por nombre; 2 = prueba los extremos y vuelve atrás;
+    /// 3 = índices fuera de rango y recarga.
+    #[derive(Default)]
+    struct Viajero {
+        accion: i32,
+        hecho: bool,
+    }
+    impl Script for Viajero {
+        fn props(&mut self, p: &mut Props) {
+            p.int("accion", &mut self.accion);
+        }
+        fn update(&mut self, ctx: &mut Ctx) {
+            if self.hecho {
+                return;
+            }
+            self.hecho = true;
+            ctx.log(format!("viajero: {} {} idx={:?} n={}", ctx.scene_name(), ctx.scene_path(), ctx.scene_index(), ctx.scene_count()));
+            match self.accion {
+                1 => assert!(ctx.load_scene("nivel2")),
+                2 => {
+                    assert!(!ctx.next_scene(), "la última no da la vuelta");
+                    assert!(ctx.previous_scene());
+                }
+                3 => {
+                    assert!(!ctx.load_scene_index(7));
+                    assert!(!ctx.load_scene("NoExiste"));
+                    ctx.reload_scene();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    maker_api::script_library!(TEST_LIB; Spinner, Spawner, Panicker, Toonify, Dancer, MenuCursor, GlobalToon, Hud, Viajero);
+
+    #[test]
+    fn scripts_switch_scenes_at_end_of_frame() {
+        use crate::escenas::EntradaEscena;
+        let raiz = std::env::temp_dir().join(format!("maker-escenas-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&raiz);
+        let mut project = crate::project::Project::create(&raiz, "Viaje", false).unwrap();
+        let escena = |nombre_marca: &str, accion: i32| {
+            let mut s = Scene::starter();
+            let m = s.spawn(nombre_marca);
+            let mut slot = ScriptSlot { name: "Viajero".into(), enabled: true, ..Default::default() };
+            slot.props.insert("accion".into(), PropVal::Int(accion));
+            s.insert(m, Scripts(vec![slot]));
+            let cube = s.find_by_name("Cubo").unwrap();
+            let mut slot = ScriptSlot { name: "Spinner".into(), enabled: true, ..Default::default() };
+            slot.props.insert("speed".into(), PropVal::Float(60.0));
+            s.insert(cube, Scripts(vec![slot]));
+            s
+        };
+        escena("MarcaA", 1).save(&raiz.join("scenes/Inicio.mscene")).unwrap();
+        escena("MarcaB", 2).save(&raiz.join("niveles/Nivel2.mscene")).unwrap();
+        // main.mscene queda fuera de la lista activa; Inicio es la de arranque.
+        project.file.escenas = vec![
+            EntradaEscena::nueva("scenes/Inicio.mscene"),
+            EntradaEscena { ruta: "scenes/main.mscene".into(), activa: false },
+            EntradaEscena::nueva("niveles/Nivel2.mscene"),
+        ];
+        project.save().unwrap();
+        let project = crate::project::Project::open(&raiz).unwrap();
+        assert_eq!(project.file.main_scene, "scenes/Inicio.mscene", "main_scene sigue a la de arranque");
+        assert_eq!(project.escenas_activas(), ["scenes/Inicio.mscene", "niveles/Nivel2.mscene"]);
+
+        let lib = Arc::new(ScriptLib::from_static(&TEST_LIB).unwrap());
+        let mut s = Scene::load(&project.main_scene_path()).unwrap();
+        let mut rt = Runtime::start_en(&mut s, Some(lib), Some(&raiz));
+        rt.fijar_escena(&project.escena_inicial());
+        let input = Input::default();
+        rt.tick(&mut s, &input, 1.0 / 60.0);
+        // El fotograma terminó entero en la escena actual: el Spinner se movió.
+        assert!(s.find_by_name("MarcaA").is_some());
+        assert!(s.global(s.find_by_name("Cubo").unwrap()).w_axis.x > 0.5);
+        assert_eq!(rt.cambio_escena.as_deref(), Some("niveles/Nivel2.mscene"));
+        assert_eq!(rt.aplicar_cambio_escena(&mut s).as_deref(), Some("niveles/Nivel2.mscene"));
+        assert!(s.find_by_name("MarcaB").is_some() && s.find_by_name("MarcaA").is_none());
+        assert_eq!((rt.script_count(), rt.time), (2, 0.0), "scripts y tiempo nuevos");
+        assert!(rt.aplicar_cambio_escena(&mut s).is_none(), "nada pendiente");
+
+        rt.tick(&mut s, &input, 1.0 / 60.0);
+        assert_eq!(rt.aplicar_cambio_escena(&mut s).as_deref(), Some("scenes/Inicio.mscene"), "previous_scene");
+        let textos: Vec<String> = log::since(0).into_iter().map(|e| e.text).collect();
+        assert!(textos.iter().any(|t| t == "viajero: Inicio scenes/Inicio.mscene idx=Some(0) n=2"), "{textos:?}");
+        assert!(textos.iter().any(|t| t == "viajero: Nivel2 niveles/Nivel2.mscene idx=Some(1) n=2"));
+        assert!(textos.iter().any(|t| t.contains("next_scene: ya es la última escena")));
+        assert!(textos.iter().any(|t| t.contains("escena: Inicio → Nivel2")));
+
+        // Índices fuera de rango y nombres desconocidos no cambian nada; reload sí.
+        let mut s3 = escena("MarcaC", 3);
+        let mut rt = Runtime::start_en(&mut s3, rt.lib.clone(), Some(&raiz));
+        rt.fijar_escena("scenes/main.mscene");
+        rt.tick(&mut s3, &input, 1.0 / 60.0);
+        assert_eq!(rt.cambio_escena.as_deref(), Some("scenes/main.mscene"), "recargar funciona aunque la escena no esté activa");
+        let textos: Vec<String> = log::since(0).into_iter().map(|e| e.text).collect();
+        assert!(textos.iter().any(|t| t.contains("viajero: main scenes/main.mscene idx=None n=2")));
+        assert!(textos.iter().any(|t| t.contains("load_scene_index: no hay escena con índice 7")));
+        let _ = std::fs::remove_dir_all(&raiz);
+    }
 
     #[test]
     fn scripts_request_cursor_mode() {

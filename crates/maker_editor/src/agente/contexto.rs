@@ -12,7 +12,7 @@ pub fn guia(ed: &Editor) -> String {
 
 Proyecto: «{nombre}» en {raiz} (directorio de trabajo actual).
 Estructura:
-- project.maker: JSON {{name, main_scene, engine_version}}. Escena principal: {principal}.
+- project.maker: JSON {{name, main_scene, engine_version, escenas:[{{ruta, activa}}]}}. `escenas` es el orden de escenas: la primera activa es la de arranque (main_scene la copia). Escena de arranque: {principal}.
 - scenes/*.mscene: escenas en JSON legible: {{"format":"maker-scene","version":1,"environment":{{sky_top, sky_horizon, ground, ambient_intensity, fog_color, fog_density, exposure, gravity}},"entities":[{{"id","name","parent"?,"sibling","active","transform":{{translation,rotation(cuaternión xyzw),scale}},"mesh"?,"light"?,"camera"?,"rigid_body"?,"collider"?,"scripts"?:[{{"name","props":{{..}},"enabled"}}]}}]}}. Mantén ids únicos y el JSON válido.
 - assets/: modelos glTF (assets/models) y materiales.
 - scripts/: crate Rust `cdylib` que depende de `maker_api` (ruta en scripts/Cargo.toml). Código en scripts/src/lib.rs. NO edites scripts/target.
@@ -30,12 +30,12 @@ impl Script for Rotator {{
 }}
 export_scripts!(Rotator, /* todos los tipos */);
 ```
-Ctx: dt, time, frame, entity; log/warn/error; position/set_position/translate/rotation/set_rotation/rotate_y/rotate_local/scale/set_scale; find(nombre), exists, position_of, set_position_of, rotation_of, set_rotation_of, set_color, spawn(Primitive, pos, spawn_flags::DYNAMIC_BODY|STATIC_BODY), destroy; key_down/key_pressed/axis(Key, Key)/mouse_down/mouse_delta; velocity/set_velocity/apply_impulse/apply_impulse_to/raycast. Props: float, int, bool, vec3, color.
+Ctx: dt, time, frame, entity; log/warn/error; position/set_position/translate/rotation/set_rotation/rotate_y/rotate_local/scale/set_scale; find(nombre), exists, position_of, set_position_of, rotation_of, set_rotation_of, set_color, spawn(Primitive, pos, spawn_flags::DYNAMIC_BODY|STATIC_BODY), destroy; key_down/key_pressed/axis(Key, Key)/mouse_down/mouse_delta; velocity/set_velocity/apply_impulse/apply_impulse_to/raycast; load_scene(nombre o ruta)/load_scene_index(i)/next_scene/previous_scene/reload_scene (se aplican al acabar el fotograma), scene_index/scene_count/scene_name. Props: float, int, bool, vec3, color.
 Compilar: `cargo build --release --manifest-path scripts/Cargo.toml` (el editor lo hace solo tras tus cambios en scripts/src y recarga la biblioteca en caliente). Un tipo nuevo debe añadirse a export_scripts! para aparecer en Inspector → Añadir componente → Script.
 Si cambias una escena, el editor la recarga si no tiene cambios sin guardar."#,
         nombre = p.name(),
         raiz = p.root.display(),
-        principal = p.file.main_scene,
+        principal = p.escena_inicial(),
     )
 }
 

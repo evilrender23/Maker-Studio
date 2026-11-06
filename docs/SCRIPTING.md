@@ -66,6 +66,7 @@ instancia; el botón ↺ vuelve al valor por defecto del código.
 | Entrada      | `key_down`, `key_pressed`, `axis(neg, pos)`, `mouse_down`, `mouse_delta`, `set_cursor_mode(CursorMode::…)` |
 | Física       | `velocity`, `set_velocity`, `apply_impulse`, `apply_impulse_to`, `raycast(origen, dir, max)` |
 | Tiempo de juego | `set_time_scale(s)` (0 = pausa: física, animación y `dt`; la interfaz sigue respondiendo) |
+| Escenas      | `load_scene(nombre_o_ruta)`, `load_scene_index(i)`, `next_scene`, `previous_scene`, `reload_scene`, `scene_index`, `scene_count`, `scene_name`, `scene_path`. Ver [Escenas](#escenas) |
 | Interfaz     | `ui(nombre)`, `ui_set_text`/`ui_text`, `ui_set_value`/`ui_value`, `ui_set_visible`/`ui_visible`, `ui_set_interactable`, `ui_set_opacity`, `ui_set_style`, `ui_set_theme`, `ui_set_image`, `ui_set_color`, `ui_clicked`, `ui_changed`, `ui_event(e, ui_event::…)`, `ui_rect`, `ui_set_position`, `ui_set_size`, `ui_instantiate`, `ui_pointer_over`, `ui_draw(e, \|p\| …)`. Ver [INTERFAZ.md](INTERFAZ.md) |
 
 `spawn_flags::DYNAMIC_BODY` / `STATIC_BODY` añaden cuerpo rígido y
@@ -95,6 +96,63 @@ petición cada fotograma no anula el Esc del jugador.
 Según la plataforma: en Wayland, Windows y macOS el bloqueo es real; en X11
 winit no sabe bloquear y el ratón queda confinado y oculto (`mouse_delta`
 sigue llegando igual). En macOS no existe el modo confinado.
+
+## Escenas
+
+El **orden de escenas** del proyecto (como *Scenes In Build* de Unity) es una
+lista ordenada que se edita en **Archivo → Orden de escenas…** o con el botón
+**Orden de escenas** de Contenido, y se guarda en `project.maker`:
+
+```json
+"escenas": [
+  { "ruta": "scenes/menu.mscene", "activa": true },
+  { "ruta": "niveles/nivel1.mscene", "activa": true },
+  { "ruta": "scenes/pruebas.mscene", "activa": false }
+]
+```
+
+- La **primera activa es la de arranque**: con ella empieza el juego exportado
+  y `maker-player` sin `--scene`. **Archivo → Hacer esta escena la principal**
+  la pone la primera. `main_scene` se mantiene igual a ella para versiones
+  anteriores; los proyectos que solo tienen `main_scene` se migran solos.
+- Arrastra filas para reordenar y escenas desde Contenido para añadirlas.
+  Las inactivas no se exportan ni cuentan para los índices. Un archivo que
+  falta sale en rojo; no rompe nada y no se exporta.
+
+Desde un script, siempre entre las escenas **activas**:
+
+```rust
+ctx.load_scene("nivel2");                 // nombre del archivo, sin extensión
+ctx.load_scene("niveles/nivel2.mscene");  // o ruta relativa (con o sin .mscene)
+ctx.load_scene_index(0);                  // la primera (desde 0)
+ctx.next_scene();                         // siguiente / anterior del orden
+ctx.previous_scene();
+ctx.reload_scene();                       // la actual otra vez, como al empezar
+let (i, n) = (ctx.scene_index(), ctx.scene_count()); // Option<usize>, usize
+```
+
+- El cambio **se aplica al terminar el fotograma**: el resto de scripts
+  termina su `update` en la escena actual. Si se pide varias veces en un
+  fotograma, gana la última petición.
+- Al cambiar se carga la escena nueva y empieza una sesión nueva: física,
+  scripts (`start` otra vez), tiempo y animación desde cero. La biblioteca de
+  scripts no se recarga. No hay estado que pase de una escena a otra; para eso,
+  guárdalo en un archivo o en un `static`.
+- Por nombre se busca primero exacto y luego sin distinguir mayúsculas.
+- `next_scene` en la última y `previous_scene` en la primera **no hacen nada**
+  (no dan la vuelta): devuelven `false` y avisan en la consola. Para volver al
+  principio, `load_scene_index(0)`. Lo mismo si la escena actual no está en el
+  orden (`scene_index()` es `None`); por nombre e índice sí funcionan.
+- Un nombre o índice que no existe devuelve `false`, avisa y no cambia nada.
+
+En el editor, Play cambia de escena igual que el juego y la consola registra
+cada cambio (`escena: menu → nivel1`). La escena abierta se juega con sus
+cambios sin guardar; las demás se leen del disco. **Stop** vuelve siempre a la
+escena que estaba abierta. El botón con el icono de inicio, junto a Play, juega
+desde la primera escena del orden.
+
+La demo trae dos escenas en el orden y el script `SceneSwitcher`: **N** pasa a
+la siguiente y, tras la última, vuelve a la primera.
 
 ## Por qué es rápido y seguro
 

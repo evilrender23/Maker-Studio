@@ -279,7 +279,7 @@ pub fn show(ed: &mut Editor, ui: &mut Ui) {
                     let rel = relativa(&raiz, p);
                     let seleccionado = c.seleccion.as_deref() == Some(p.as_path()) || (tipo == Tipo::Escena && *p == escena_actual);
                     let tex = if tipo == Tipo::Modelo { c.mini(renderer, &raiz, &ctx, p, &mut puede_render) } else { None };
-                    let sentido = if matches!(tipo, Tipo::Modelo | Tipo::Plantilla) { egui::Sense::click_and_drag() } else { egui::Sense::click() };
+                    let sentido = if matches!(tipo, Tipo::Modelo | Tipo::Plantilla | Tipo::Escena) { egui::Sense::click_and_drag() } else { egui::Sense::click() };
                     let (rect, resp) = ui.allocate_exact_size(egui::vec2(CELDA - 4.0, CELDA), sentido);
                     let pt = ui.painter_at(rect);
                     let fondo = if seleccionado {
@@ -305,7 +305,12 @@ pub fn show(ed: &mut Editor, ui: &mut Ui) {
                     let nombre = elidir(ui, &p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), CELDA - 10.0);
                     pt.text(egui::pos2(rect.center().x, rect.bottom() - 4.0), egui::Align2::CENTER_BOTTOM, nombre, egui::FontId::proportional(11.0), theme::TEXT1);
                     if resp.drag_started() {
-                        egui::DragAndDrop::set_payload(&resp.ctx, AssetDrag(rel.clone()));
+                        // Las escenas van a la ventana Orden de escenas, no al visor.
+                        if tipo == Tipo::Escena {
+                            egui::DragAndDrop::set_payload(&resp.ctx, crate::escenas_ui::EscenaDrag(rel.clone()));
+                        } else {
+                            egui::DragAndDrop::set_payload(&resp.ctx, AssetDrag(rel.clone()));
+                        }
                     }
                     if resp.clicked() {
                         c.seleccion = Some(p.clone());
@@ -405,6 +410,9 @@ fn barra(ed: &mut Editor, ui: &mut Ui) {
         .on_hover_text(format!("Efecto de posprocesado WGSL en {}", maker_engine::postproceso::CUSTOM_DIR));
         let destino = ed.project.root.join(&ed.contenido.carpeta);
         crate::importar::menu(ed, ui, destino);
+        if ui.button("Orden de escenas").clicked() {
+            ed.ventana_escenas = true;
+        }
         if ui.button("Abrir carpeta").clicked() {
             let d = ed.project.root.join(&ed.contenido.carpeta);
             let _ = std::process::Command::new(if cfg!(windows) { "explorer" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" }).arg(d).spawn();

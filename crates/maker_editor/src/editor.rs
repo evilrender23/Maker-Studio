@@ -191,6 +191,8 @@ pub struct Editor {
     pub estilos: crate::estilos_ui::EstilosUi,
     /// Plantillas leídas (para calcular los retoques de cada instancia).
     plantillas: BTreeMap<String, Option<PlantillaUi>>,
+    /// Ventana «Orden de escenas».
+    pub ventana_escenas: bool,
 }
 
 impl Editor {
@@ -264,6 +266,7 @@ impl Editor {
             ui_arrastre: None,
             estilos: Default::default(),
             plantillas: BTreeMap::new(),
+            ventana_escenas: false,
         };
         let docs = ed.docs_ui();
         ed.undo.reset_con(&ed.scene, docs);
@@ -688,13 +691,40 @@ impl Editor {
     // ───────────────────────────── Play ─────────────────────────────
 
     pub fn play(&mut self) {
+        self.play_en(None);
+    }
+
+    /// Play desde la escena de arranque (la primera activa del orden de escenas).
+    /// Stop vuelve igualmente a la escena abierta.
+    pub fn play_desde_inicio(&mut self) {
+        let inicio = self.project.escena_inicial();
+        self.play_en((inicio != self.project.relative(&self.scene_path)).then_some(inicio));
+    }
+
+    /// Empieza Play en la escena abierta o, con `escena`, en esa (leída del disco).
+    fn play_en(&mut self, escena: Option<String>) {
         if self.is_playing() {
             return;
         }
         self.commit("Antes de Play");
         let snapshot = self.scene.to_file();
+        let ruta = escena.clone().unwrap_or_else(|| self.project.relative(&self.scene_path));
+        if let Some(r) = &escena {
+            match Scene::load(&self.project.root.join(r)) {
+                Ok(mut s) => {
+                    ui::plantilla::sincronizar_todas(&mut s, &self.project.root);
+                    self.scene = s;
+                    self.selection = None;
+                }
+                Err(e) => {
+                    log::error("editor", format!("no se pudo abrir la escena de arranque: {e}"));
+                    return;
+                }
+            }
+        }
         let mut runtime = Runtime::start_en(&mut self.scene, self.lib.clone(), Some(&self.project.root));
         runtime.project_root = Some(self.project.root.clone());
+        runtime.fijar_escena(&ruta);
         runtime.ui.recursos = self.ui.recursos.clone();
         self.modo_ui = false;
         self.play = Some(PlaySession { runtime, snapshot, selection: self.selection });
@@ -733,6 +763,36 @@ impl Editor {
             p.runtime.tick(&mut self.scene, &self.input, 1.0 / 60.0);
             p.runtime.paused = true;
         }
+        self.aplicar_cambio_escena();
+    }
+
+    /// Cambio de escena pedido por un script durante Play: se aplica al acabar
+    /// el fotograma. La escena abierta en el editor se juega con sus cambios
+    /// sin guardar (la instantánea de antes de Play); las demás se leen del disco.
+    fn aplicar_cambio_escena(&mut self) {
+        let Some(p) = &mut self.play else { return };
+        let abierta = self.project.relative(&self.scene_path);
+        let snapshot = &p.snapshot;
+        if p.runtime.aplicar_cambio_escena_con(&mut self.scene, |r| (r == abierta).then(|| Scene::from_file(snapshot))).is_some() {
+            self.selection = None;
+            self.euler_cache = None;
+            self.gizmo.cancel();
+        }
+    }
+
+    /// Escena que se está jugando (ruta relativa), si no es la abierta.
+    pub fn escena_en_juego(&self) -> Option<&str> {
+        let r = self.play.as_ref()?.runtime.escena.as_deref()?;
+        (r != self.project.relative(&self.scene_path)).then_some(r)
+    }
+
+    /// Guarda el orden de escenas en `project.maker` (y `main_scene` a la par).
+    pub fn guardar_orden_escenas(&mut self) {
+        self.project.file.normalizar();
+        match self.project.save() {
+            Ok(()) => self.status = format!("Orden de escenas guardado · arranque: {}", self.project.escena_inicial()),
+            Err(e) => log::error("editor", e),
+        }
     }
 
     pub fn tick(&mut self, dt: f32) {
@@ -740,6 +800,7 @@ impl Editor {
             Some(p) => {
                 p.runtime.tick(&mut self.scene, &self.input, dt);
                 self.cursor.modo_script(p.runtime.cursor_mode, self.game_focus);
+                self.aplicar_cambio_escena();
             }
             // Fuera de Play solo avanza el Animator seleccionado (vista previa).
             None => {
@@ -973,12 +1034,14 @@ impl Editor {
         std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
         let exe = out.join(if cfg!(windows) { format!("{name}.exe") } else { name.clone() });
         std::fs::copy(&player, &exe).map_err(|e| format!("copiando el reproductor: {e}"))?;
-        std::fs::copy(self.project.root.join(maker_engine::project::PROJECT_FILE), out.join(maker_engine::project::PROJECT_FILE)).map_err(|e| e.to_string())?;
         for dir in ["scenes", "assets", ui::DIR_UI] {
             copy_dir(&self.project.root.join(dir), &out.join(dir))?;
         }
+        // Solo las escenas activas del orden de escenas (y lo que usan ellas).
+        let escenas = exportar_escenas(&self.project, &out)?;
+        log::info("editor", format!("escenas exportadas: {}", escenas.join(", ")));
         // Solo lo que usan las escenas de la biblioteca integrada, junto al ejecutable.
-        let scenes: Vec<_> = self.project.scenes().iter().filter_map(|s| Scene::load(&self.project.root.join(s)).ok()).map(|s| s.to_file()).collect();
+        let scenes: Vec<_> = escenas.iter().filter_map(|s| Scene::load(&self.project.root.join(s)).ok()).map(|s| s.to_file()).collect();
         // Imágenes y fuentes de la interfaz: las de la biblioteca van con las demás;
         // las del proyecto fuera de scenes/, assets/ y ui/ se copian una a una.
         let usados = ui::recursos_usados(&scenes, &self.ui.recursos);
@@ -1040,6 +1103,7 @@ impl Editor {
     }
 }
 
+/// Copia una carpeta sin sus escenas (`.mscene`): esas las copia [`exportar_escenas`].
 fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
     if !src.exists() {
         return Ok(());
@@ -1050,11 +1114,39 @@ fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> 
         let to = dst.join(e.file_name());
         if p.is_dir() {
             copy_dir(&p, &to)?;
-        } else {
+        } else if p.extension().is_none_or(|x| x != maker_engine::project::SCENE_EXT) {
             std::fs::copy(&p, &to).map_err(|e| e.to_string())?;
         }
     }
     Ok(())
+}
+
+/// Copia a `out` las escenas activas del orden de escenas y escribe allí
+/// `project.maker` con solo esas (las que faltan se avisan y se omiten; si
+/// falta la de arranque, error). Devuelve las rutas exportadas, en orden.
+fn exportar_escenas(project: &Project, out: &std::path::Path) -> Result<Vec<String>, String> {
+    use maker_engine::escenas::{self, EntradaEscena};
+    let activas = project.escenas_activas();
+    let mut exportadas = Vec::new();
+    for (i, r) in activas.iter().enumerate() {
+        if escenas::falta(&project.root, r) {
+            if i == 0 {
+                return Err(format!("falta la escena de arranque {r}"));
+            }
+            log::warn("editor", format!("orden de escenas: falta {r}, no se exporta"));
+            continue;
+        }
+        let dst = out.join(r);
+        std::fs::create_dir_all(dst.parent().unwrap_or(out)).map_err(|e| e.to_string())?;
+        std::fs::copy(project.root.join(r), &dst).map_err(|e| format!("{r}: {e}"))?;
+        exportadas.push(r.clone());
+    }
+    let mut file = project.file.clone();
+    file.escenas = exportadas.iter().map(|r| EntradaEscena::nueva(r)).collect();
+    file.normalizar();
+    let txt = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
+    std::fs::write(out.join(maker_engine::project::PROJECT_FILE), txt).map_err(|e| e.to_string())?;
+    Ok(exportadas)
 }
 
 /// Elementos de interfaz del menú Crear → Interfaz.
@@ -1164,6 +1256,34 @@ mod tests {
         assert_eq!(l, "estilo");
         assert!(f.ui.is_empty());
         assert!(u.can_redo());
+    }
+
+    #[test]
+    fn export_copies_only_active_scenes_in_order() {
+        use maker_engine::escenas::EntradaEscena;
+        let d = std::env::temp_dir().join(format!("maker-export-escenas-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let mut p = Project::create(&d.join("p"), "Exp", false).unwrap();
+        Scene::starter().save(&d.join("p/niveles/n2.mscene")).unwrap();
+        Scene::starter().save(&d.join("p/scenes/fuera.mscene")).unwrap();
+        p.file.escenas = vec![
+            EntradaEscena::nueva("niveles/n2.mscene"),
+            EntradaEscena { ruta: "scenes/fuera.mscene".into(), activa: false },
+            EntradaEscena::nueva("scenes/no-existe.mscene"),
+            EntradaEscena::nueva("scenes/main.mscene"),
+        ];
+        let out = d.join("out");
+        copy_dir(&p.root.join("scenes"), &out.join("scenes")).unwrap();
+        assert_eq!(exportar_escenas(&p, &out).unwrap(), ["niveles/n2.mscene", "scenes/main.mscene"]);
+        assert!(out.join("niveles/n2.mscene").is_file() && out.join("scenes/main.mscene").is_file());
+        assert!(!out.join("scenes/fuera.mscene").exists(), "las inactivas no se exportan");
+        let e = Project::open(&out).unwrap();
+        assert_eq!(e.escenas_activas(), ["niveles/n2.mscene", "scenes/main.mscene"]);
+        assert_eq!(e.file.main_scene, "niveles/n2.mscene");
+        // Sin la escena de arranque no hay juego que exportar.
+        p.file.escenas.insert(0, EntradaEscena::nueva("scenes/no-existe.mscene"));
+        assert!(exportar_escenas(&p, &out).is_err());
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
 

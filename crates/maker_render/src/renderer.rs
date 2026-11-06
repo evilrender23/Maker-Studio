@@ -31,6 +31,8 @@ use crate::gi::{self, GiDebug, GiDraw, GiSystem};
 use crate::postproceso::PostFx;
 use crate::texture;
 
+mod escultura;
+
 pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Los normal maps son datos, no color: sin conversión sRGB.
@@ -190,6 +192,8 @@ enum Fixed {
     Outline { skinned: bool },
     Sky,
     Grid,
+    /// Alambre de la malla esculpida (líneas).
+    Wire,
 }
 
 fn target_format(hdr: bool) -> wgpu::TextureFormat {
@@ -263,6 +267,8 @@ pub struct RenderOptions {
     /// Permite la iluminación global de la escena (las miniaturas no).
     pub gi: bool,
     pub gi_debug: GiDebug,
+    /// Alambre sobre la malla esculpida.
+    pub sculpt_wire: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -283,6 +289,8 @@ pub struct FrameStats {
     pub gi_revoxelized: u32,
     /// Tiempo de GPU de la GI (ms; última medida, si hay consultas de tiempo).
     pub gi_ms: Option<f32>,
+    /// Bytes de la malla esculpida subidos desde el fotograma anterior.
+    pub sculpt_upload: u64,
 }
 
 pub(crate) struct GpuSub {
@@ -397,6 +405,9 @@ pub struct SceneRenderer {
     auto_rx: Option<Receiver<AutoResult>>,
     auto_pending: usize,
     failed_models: HashSet<String>,
+    /// Malla esculpida (dinámica) y el hueco de `models` que usa.
+    sculpt: Option<escultura::SculptGpu>,
+    sculpt_slot: Option<usize>,
     // Memoria reutilizada entre fotogramas (sin reservas por fotograma).
     draws: Vec<Draw>,
     order: Vec<usize>,
@@ -679,6 +690,8 @@ impl SceneRenderer {
             auto_rx: None,
             auto_pending: 0,
             failed_models: HashSet::new(),
+            sculpt: None,
+            sculpt_slot: None,
             draws: Vec::new(),
             order: Vec::new(),
             object_bytes: Vec::new(),
@@ -757,6 +770,11 @@ impl SceneRenderer {
         if self.fixed.contains_key(&(f, hdr)) {
             return;
         }
+        if f == Fixed::Wire {
+            let p = self.wire_pipeline(hdr);
+            self.fixed.insert((f, hdr), p);
+            return;
+        }
         // Casco invertido: posición del búfer de vértices normal + normales suavizadas (+ piel).
         let ink_pos = wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<Vertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &INK_POS_ATTRS };
         let ink_n = wgpu::VertexBufferLayout { array_stride: 12, step_mode: wgpu::VertexStepMode::Vertex, attributes: &INK_NORMAL_ATTRS };
@@ -771,6 +789,7 @@ impl SceneRenderer {
             Fixed::Outline { skinned: true } => ("outline skinned", &self.ink_layout, "vs_outline_skinned", "fs_outline", &vb_skin, Some(wgpu::Face::Front), true, wgpu::CompareFunction::LessEqual, None),
             Fixed::Sky => ("sky", &self.globals_only, "vs_sky", "fs_sky", &[], None, false, wgpu::CompareFunction::Always, None),
             Fixed::Grid => ("grid", &self.globals_only, "vs_grid", "fs_grid", &[], None, false, wgpu::CompareFunction::LessEqual, Some(wgpu::BlendState::ALPHA_BLENDING)),
+            Fixed::Wire => unreachable!(),
         };
         let p = make_pipeline(
             &self.device,
@@ -1150,6 +1169,9 @@ impl SceneRenderer {
 
     /// Olvida modelos y texturas cacheados (tras reimportar archivos).
     pub fn clear_model_cache(&mut self) {
+        // La malla esculpida vive en `models`: quien esculpe la vuelve a subir (`sculpt_entity`).
+        self.sculpt = None;
+        self.sculpt_slot = None;
         self.models.clear();
         self.model_index.clear();
         self.materials.clear();
@@ -1189,12 +1211,27 @@ impl SceneRenderer {
                 }
             }
         };
-        let i = self.upload_model(&data);
+        let i = self.upload_model(&data, false);
         self.model_index.insert(src.clone(), i);
         Some(i)
     }
 
-    fn upload_model(&mut self, data: &ModelData) -> usize {
+    /// Vuelve a cargar un modelo desde su archivo (tras reescribirlo), en el mismo hueco.
+    pub fn reload_model(&mut self, src: &MeshSource) {
+        if let MeshSource::Model(p) = src {
+            self.failed_models.remove(p);
+        }
+        let Some(old) = self.model_index.remove(src) else { return };
+        if let Some(new) = self.ensure_model(src) {
+            self.models.swap(old, new);
+            self.models.pop();
+            self.model_index.insert(src.clone(), old);
+        }
+    }
+
+    /// `dynamic`: el búfer de vértices admite escrituras parciales (malla esculpida).
+    fn upload_model(&mut self, data: &ModelData, dynamic: bool) -> usize {
+        let extra = if dynamic { wgpu::BufferUsages::COPY_DST } else { wgpu::BufferUsages::empty() };
         let m = &data.mesh;
         let verts: Vec<Vertex> = (0..m.positions.len())
             .map(|i| Vertex {
@@ -1205,9 +1242,9 @@ impl SceneRenderer {
                 tangent: m.tangents.get(i).copied().unwrap_or(Vec4::new(1.0, 0.0, 0.0, 1.0)).to_array().map(|c| (c.clamp(-1.0, 1.0) * 32767.0).round() as i16),
             })
             .collect();
-        let vbuf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("mesh vertices"), contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX });
+        let vbuf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("mesh vertices"), contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX | extra });
         let smooth: Vec<[f32; 3]> = m.smooth_normals().iter().map(|n| n.to_array()).collect();
-        let smooth = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("mesh smooth normals"), contents: bytemuck::cast_slice(&smooth), usage: wgpu::BufferUsages::VERTEX });
+        let smooth = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("mesh smooth normals"), contents: bytemuck::cast_slice(&smooth), usage: wgpu::BufferUsages::VERTEX | extra });
         let ibuf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("mesh indices"), contents: bytemuck::cast_slice(&m.indices), usage: wgpu::BufferUsages::INDEX });
         let skinned = data.skinned() && data.anim.has_skin();
         let skin = skinned.then(|| {
@@ -1394,7 +1431,8 @@ impl SceneRenderer {
             if hidden.contains(id) {
                 continue;
             }
-            let Some(mi) = self.ensure_model(&mr.mesh) else { continue };
+            let dynamic = self.sculpt.as_ref().filter(|s| s.entity == *id).map(|s| s.model);
+            let Some(mi) = dynamic.or_else(|| self.ensure_model(&mr.mesh)) else { continue };
             let m = gt.0;
             let model = &self.models[mi];
             let wb = model.aabb.transformed(&m);
@@ -1459,6 +1497,14 @@ impl SceneRenderer {
         if opts.show_grid {
             self.ensure_fixed(Fixed::Grid, hdr);
         }
+        let wire = if opts.sculpt_wire {
+            self.sculpt.as_ref().and_then(|s| s.wire.as_ref().map(|_| s.model)).and_then(|m| draws.iter().find(|d| d.model == m && d.visible).map(|d| (d.slot, d.mat)))
+        } else {
+            None
+        };
+        if wire.is_some() {
+            self.ensure_fixed(Fixed::Wire, hdr);
+        }
         for d in &draws {
             if d.visible {
                 self.ensure_matn(d.mat, d.nrm);
@@ -1485,6 +1531,10 @@ impl SceneRenderer {
                 let wb = m.aabb.transformed(&Mat4::from_cols_array_2d(&obj.model));
                 // Con piel, la paleta de huesos también cuenta (se revoxeliza al animar).
                 let mut semilla = ((d.model as u64) << 32) ^ ((d.sub as u64) << 16) ^ d.mat as u64;
+                if let Some(s) = self.sculpt.as_ref().filter(|s| s.model == d.model) {
+                    // La malla esculpida cambia sin cambiar de modelo: se revoxeliza al esculpir.
+                    semilla = gi::huella(&s.version.to_le_bytes(), semilla);
+                }
                 if d.key.skinned {
                     let j0 = obj.skin[0] as usize;
                     let pal = joints.get(j0..j0 + m.joints as usize).unwrap_or(&[]);
@@ -1703,6 +1753,18 @@ impl SceneRenderer {
                     stats.draw_calls += 1;
                 }
             }
+            if let (Some((slot, mat)), Some(s)) = (wire, self.sculpt.as_ref())
+                && let Some((ibuf, count)) = &s.wire
+            {
+                let m = &self.models[s.model];
+                pass.set_pipeline(&self.fixed[&(Fixed::Wire, hdr)]);
+                pass.set_bind_group(1, &self.object_bg, &[(slot as u64 * OBJ_STRIDE) as u32]);
+                pass.set_bind_group(2, &self.materials[mat], &[]);
+                pass.set_vertex_buffer(0, m.vbuf.slice(..));
+                pass.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..*count, 0, 0..1);
+                stats.draw_calls += 1;
+            }
             if opts.show_grid {
                 pass.set_pipeline(&self.fixed[&(Fixed::Grid, hdr)]);
                 pass.set_bind_group(0, &self.globals_bg, &[]);
@@ -1726,6 +1788,9 @@ impl SceneRenderer {
         self.order = order;
         self.object_bytes = bytes;
         self.joint_data = joints;
+        if let Some(s) = self.sculpt.as_mut() {
+            stats.sculpt_upload = std::mem::take(&mut s.uploaded);
+        }
         self.stats = stats;
     }
 
@@ -2340,5 +2405,95 @@ pub(crate) mod tests {
 
     fn info_base(r: &mut SceneRenderer) -> TextureSource {
         r.normal_info(&MeshSource::Model("plano.gltf".into())).unwrap().missing[0].0.clone()
+    }
+
+    /// La malla esculpida se dibuja desde su búfer dinámico y solo cambia en pantalla cuando
+    /// se suben sus rangos sucios (subida parcial). La máscara oscurece.
+    #[test]
+    fn sculpt_mesh_partial_updates_reach_the_gpu() {
+        use maker_sculpt::{Action, Brush, Dab, DabOptions, Sculpt, primitives};
+        let Some((device, queue, _gpu)) = device() else {
+            eprintln!("sin adaptador GPU: test omitido");
+            return;
+        };
+        let mut scene = Scene::new();
+        scene.env.fog_density = 0.0;
+        let sun = scene.spawn("Sol");
+        let mut t = Transform::default();
+        t.set_euler_degrees(Vec3::new(-30.0, 20.0, 0.0));
+        scene.set_transform(sun, t);
+        scene.insert(sun, Light { intensity: 3.0, ..Light::directional() });
+        let id = scene.spawn("Escultura");
+        scene.insert(id, MeshRenderer { material: Material::color([0.9, 0.2, 0.1]), ..MeshRenderer::primitive(PrimitiveShape::Cube) });
+        scene.update_transforms();
+        let eid = id;
+        let mut r = SceneRenderer::new(&device, &queue);
+        let (w, h) = (128u32, 128u32);
+        r.resize(w, h);
+        let eye = Vec3::new(0.0, 0.0, 3.0);
+        let view = RenderView { view: look_at(eye, Vec3::ZERO, Vec3::Y), proj: maker_engine::math::perspective(40.0, 1.0, 0.05, 50.0), eye };
+        let opts = RenderOptions { shadows: true, ..Default::default() };
+        let render = |r: &mut SceneRenderer| {
+            r.render(&scene, &view, &opts);
+            r.read_pixels().unwrap().2
+        };
+        let px = |img: &[u8], x: u32, y: u32| {
+            let i = ((y * w + x) * 4) as usize;
+            [img[i], img[i + 1], img[i + 2]]
+        };
+        let diff = |a: [u8; 3], b: [u8; 3]| a.iter().zip(&b).map(|(x, y)| (*x as i32 - *y as i32).abs()).max().unwrap();
+
+        let mut sc = Sculpt::from_mesh(primitives::quad_sphere(32, 0.5));
+        r.sculpt_begin(eid, &sc.to_model());
+        assert_eq!(r.sculpt_entity(), Some(eid));
+        let a = render(&mut r);
+        // Radio 0,5 a 3 m con 40°: ~29 px. Justo fuera del borde derecho e izquierdo.
+        let (right, left, center) = ((w / 2 + 36, h / 2), (w / 2 - 36, h / 2), (w / 2, h / 2));
+        assert!(diff(px(&a, center.0, center.1), px(&a, right.0, right.1)) > 20, "la esfera (no el cubo) se ve en el centro");
+
+        // Hinchar el lado derecho en la CPU: sin subirlo, la imagen no cambia.
+        let o = DabOptions::default();
+        for _ in 0..25 {
+            sc.dab(Action::Brush { brush: Brush::Inflate, invert: false }, &Dab::at(Vec3::new(0.5, 0.0, 0.0), Vec3::X, 0.3, 1.0), &o);
+        }
+        sc.end_stroke();
+        let b = render(&mut r);
+        assert_eq!(diff(px(&a, right.0, right.1), px(&b, right.0, right.1)), 0);
+
+        let mut ranges = Vec::new();
+        sc.take_gpu_ranges(&mut ranges);
+        let total: u32 = ranges.iter().map(|x| x.end - x.start).sum();
+        assert!(total > 0 && (total as usize) < sc.render_vertex_count(), "subida parcial: {total}");
+        let bytes = r.sculpt_write(&ranges, |i| sc.render_vertex(i));
+        assert!(bytes > 0);
+        let (bmin, bmax) = sc.mesh.bounds();
+        r.sculpt_set_bounds(Aabb { min: bmin, max: bmax });
+        let c = render(&mut r);
+        assert!(r.stats.sculpt_upload > 0);
+        assert!(diff(px(&a, right.0, right.1), px(&c, right.0, right.1)) > 20, "el bulto derecho aparece");
+        assert!(diff(px(&a, left.0, left.1), px(&c, left.0, left.1)) < 4, "el lado izquierdo sigue igual");
+
+        // Máscara en el centro: más oscuro tras subirla.
+        for _ in 0..10 {
+            sc.dab(Action::Mask { erase: false }, &Dab::at(Vec3::new(0.0, 0.0, 0.5), Vec3::Z, 0.2, 1.0), &o);
+        }
+        sc.end_stroke();
+        sc.take_gpu_ranges(&mut ranges);
+        r.sculpt_write(&ranges, |i| sc.render_vertex(i));
+        let d = render(&mut r);
+        let luma = |p: [u8; 3]| p.iter().map(|&x| x as i32).sum::<i32>();
+        assert!(luma(px(&d, center.0, center.1)) < luma(px(&c, center.0, center.1)) - 30, "enmascarado más oscuro");
+
+        // Alambre: añade líneas oscuras sobre la superficie.
+        r.sculpt_set_wire(Some(&sc.wire_edges()));
+        r.render(&scene, &view, &RenderOptions { sculpt_wire: true, ..opts.clone() });
+        let e = r.read_pixels().unwrap().2;
+        assert!(mean_diff(&d, &e) > 0.5, "se ven las aristas");
+
+        // Al terminar, la entidad vuelve a su malla (el cubo).
+        r.sculpt_end();
+        assert_eq!(r.sculpt_entity(), None);
+        let f = render(&mut r);
+        assert!(diff(px(&f, w / 2 + 31, h / 2 + 31), px(&a, w / 2 + 31, h / 2 + 31)) > 10, "la esquina del cubo vuelve");
     }
 }

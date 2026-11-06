@@ -618,6 +618,21 @@ fn outline_vertex(v: VIn, skin: mat4x4<f32>) -> vec4<f32> {
     return g.view_proj * vec4<f32>(w.xyz + n * dist * 0.006, 1.0);
 }
 
+// ───────────────────────────── Alambre de la malla esculpida ─────────────────────────────
+
+@vertex
+fn vs_wire(v: VIn) -> @builtin(position) vec4<f32> {
+    var c = g.view_proj * (obj.model * vec4<f32>(v.pos, 1.0));
+    // Un poco hacia la cámara, en proporción a la distancia, para que no se hunda en la superficie.
+    c.z = c.z - (c.w - c.z) * 0.002;
+    return c;
+}
+
+@fragment
+fn fs_wire() -> @location(0) vec4<f32> {
+    return vec4<f32>(0.06, 0.07, 0.1, 0.4);
+}
+
 // ───────────────────────────── Mapa de sombras ─────────────────────────────
 // Se dibuja con un Globals propio cuyo `view_proj` es la matriz de la luz.
 

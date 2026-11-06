@@ -1028,6 +1028,39 @@ impl Sculpt {
 
     // ───────────────────────────── exportar ─────────────────────────────
 
+    /// Posición, normal y máscara del vértice de render `r`.
+    #[inline]
+    pub fn render_vertex(&self, r: u32) -> (Vec3, Vec3, f32) {
+        let n = self.mesh.pos.len() as u32;
+        let s = if r < n { r } else { self.mesh.render.extra_src[(r - n) as usize] } as usize;
+        (self.mesh.pos[s], self.mesh.nrm[s], self.mesh.mask_at(s))
+    }
+
+    /// Número de vértices de render (los de la GPU).
+    pub fn render_vertex_count(&self) -> usize {
+        self.mesh.render.len()
+    }
+
+    /// Aristas para la vista de alambre, en pares de índices de render (cada arista una vez).
+    pub fn wire_edges(&self) -> Vec<u32> {
+        let m = &self.mesh;
+        let ri = &m.render.indices;
+        let mut out = Vec::with_capacity(m.tris.len() * 3);
+        for (k, t) in m.tris.iter().enumerate() {
+            for e in 0..3 {
+                let (a, b) = (t[e], t[(e + 1) % 3]);
+                // Una arista interior sale dos veces con sentidos opuestos: vale la de a < b.
+                // Las de borde salen una sola vez.
+                let keep = a < b || (m.boundary[a as usize] && m.boundary[b as usize] && m.tris_of(a).iter().filter(|&&x| m.tris[x as usize].contains(&b)).count() == 1);
+                if keep {
+                    out.push(ri[k * 3 + e]);
+                    out.push(ri[k * 3 + (e + 1) % 3]);
+                }
+            }
+        }
+        out
+    }
+
     /// Modelo con los vértices de render (costuras, UV, colores y materiales originales).
     pub fn to_model(&self) -> ModelData {
         let m = &self.mesh;
@@ -1064,3 +1097,4 @@ fn passes(amount: f32) -> u32 {
 
 #[cfg(test)]
 mod tests;
+

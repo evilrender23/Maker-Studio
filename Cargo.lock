@@ -1636,6 +1636,7 @@ dependencies = [
  "image",
  "log",
  "maker_engine",
+ "maker_sculpt",
  "pollster 0.4.0",
  "serde_json",
  "wgpu",

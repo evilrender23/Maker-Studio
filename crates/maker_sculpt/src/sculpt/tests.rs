@@ -677,3 +677,12 @@ fn bench_dab_on_million_vertex_sphere() {
         println!("  {r}");
     }
 }
+
+#[test]
+fn wire_edges_count_each_edge_once() {
+    // Esfera cerrada: E = 3T/2. Plano abierto de n×n celdas: E = 3n² + 2n.
+    let sc = sphere(8);
+    assert_eq!(sc.wire_edges().len() / 2, sc.triangle_count() * 3 / 2);
+    let sc = plane(6);
+    assert_eq!(sc.wire_edges().len() / 2, 3 * 36 + 2 * 6);
+}

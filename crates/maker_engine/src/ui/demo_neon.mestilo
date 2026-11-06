@@ -1,0 +1,101 @@
+{
+  "estilos": {
+    "neon_panel": {
+      "normal": {
+        "fondo": { "Degradado": { "desde": [0.06, 0.07, 0.16, 0.92], "hasta": [0.02, 0.02, 0.06, 0.96], "angulo": 90.0 } },
+        "borde_color": [0.0, 0.95, 0.85, 0.85],
+        "borde_ancho": 2.0,
+        "radio": [22.0, 2.0, 22.0, 2.0],
+        "sombra": { "color": [0.0, 0.95, 0.85, 0.35], "desplazamiento": [0.0, 0.0], "difuminado": 26.0, "expansion": 2.0 },
+        "relleno": [28.0, 24.0, 28.0, 24.0]
+      }
+    },
+    "neon_velo": {
+      "normal": { "fondo": { "Color": [0.01, 0.0, 0.05, 0.62] } }
+    },
+    "neon_texto": {
+      "normal": {
+        "fuente": "ui/fuentes/Hack-Regular.ttf",
+        "tam_texto": 28.0,
+        "color_texto": [0.92, 0.98, 1.0, 1.0],
+        "sombra_texto": { "color": [0.0, 0.0, 0.0, 0.8], "ancho": 0.0, "desplazamiento": [2.0, 2.0] }
+      }
+    },
+    "neon_titulo": {
+      "hereda": "neon_texto",
+      "normal": {
+        "tam_texto": 54.0,
+        "color_texto": [1.0, 0.78, 0.18, 1.0],
+        "contorno_texto": { "color": [0.45, 0.08, 0.3, 1.0], "ancho": 2.0, "desplazamiento": [0.0, 0.0] }
+      }
+    },
+    "neon_puntos": {
+      "hereda": "neon_titulo",
+      "normal": { "tam_texto": 40.0 }
+    },
+    "neon_boton": {
+      "normal": {
+        "fondo": { "Degradado": { "desde": [0.98, 0.25, 0.55, 1.0], "hasta": [0.55, 0.1, 0.75, 1.0], "angulo": 0.0 } },
+        "borde_color": [1.0, 0.85, 0.95, 0.9],
+        "borde_ancho": 1.5,
+        "radio": [16.0, 0.0, 16.0, 0.0],
+        "sombra": { "color": [0.98, 0.25, 0.55, 0.45], "desplazamiento": [0.0, 4.0], "difuminado": 16.0, "expansion": 0.0 },
+        "relleno": [24.0, 10.0, 24.0, 10.0],
+        "fuente": "ui/fuentes/Hack-Regular.ttf",
+        "tam_texto": 26.0,
+        "color_texto": [1.0, 1.0, 1.0, 1.0],
+        "transicion": 0.15
+      },
+      "encima": {
+        "fondo": { "Degradado": { "desde": [1.0, 0.78, 0.18, 1.0], "hasta": [0.98, 0.35, 0.3, 1.0], "angulo": 0.0 } },
+        "sombra": { "color": [1.0, 0.78, 0.18, 0.6], "desplazamiento": [0.0, 6.0], "difuminado": 24.0, "expansion": 2.0 },
+        "color_texto": [0.1, 0.02, 0.12, 1.0],
+        "escala": 1.06,
+        "desplazamiento": [6.0, 0.0]
+      },
+      "pulsado": { "escala": 0.95, "desplazamiento": [6.0, 2.0], "transicion": 0.05 },
+      "desactivado": { "opacidad": 0.4 },
+      "foco": { "borde_color": [0.0, 0.95, 0.85, 1.0], "borde_ancho": 3.0 }
+    },
+    "neon_barra": {
+      "normal": {
+        "fondo": { "Color": [0.05, 0.05, 0.12, 0.85] },
+        "borde_color": [0.0, 0.95, 0.85, 0.7],
+        "borde_ancho": 2.0,
+        "radio": [12.0, 0.0, 12.0, 0.0]
+      },
+      "partes": {
+        "relleno": {
+          "normal": {
+            "fondo": { "Degradado": { "desde": [0.0, 0.95, 0.6, 1.0], "hasta": [0.0, 0.6, 1.0, 1.0], "angulo": 0.0 } },
+            "radio": [10.0, 0.0, 10.0, 0.0]
+          }
+        }
+      }
+    },
+    "neon_casilla": {
+      "normal": {
+        "fondo": { "Color": [0.05, 0.05, 0.12, 0.9] },
+        "borde_color": [0.0, 0.95, 0.85, 0.9],
+        "borde_ancho": 2.0,
+        "radio": [8.0, 0.0, 8.0, 0.0],
+        "fuente": "ui/fuentes/Hack-Regular.ttf",
+        "tam_texto": 24.0,
+        "color_texto": [0.92, 0.98, 1.0, 1.0],
+        "transicion": 0.1
+      },
+      "encima": { "borde_color": [1.0, 0.78, 0.18, 1.0] },
+      "partes": { "marca": { "normal": { "fondo": { "Color": [1.0, 0.78, 0.18, 1.0] }, "radio": [4.0, 0.0, 4.0, 0.0] } } }
+    },
+    "neon_deslizador": {
+      "hereda": "neon_barra",
+      "partes": {
+        "relleno": { "normal": { "fondo": { "Color": [0.98, 0.25, 0.55, 1.0] }, "radio": [10.0, 0.0, 10.0, 0.0] } },
+        "tirador": {
+          "normal": { "fondo": { "Color": [1.0, 0.78, 0.18, 1.0] }, "radio": [4.0, 4.0, 4.0, 4.0] },
+          "encima": { "escala": 1.2 }
+        }
+      }
+    }
+  }
+}

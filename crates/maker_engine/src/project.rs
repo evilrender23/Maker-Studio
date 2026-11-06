@@ -124,7 +124,9 @@ impl Project {
         write(&project.root.join(".gitignore"), "scripts/target/\nexport/\n")?;
         let scene = if demo { demo_scene() } else { Scene::starter() };
         scene.save(&project.main_scene_path())?;
+        let mut project = project;
         if demo {
+            demo_ui(&mut project)?;
             library_scene().save(&project.root.join("scenes/biblioteca.mscene"))?;
         }
         Ok(project)
@@ -267,8 +269,77 @@ pub fn demo_scene() -> Scene {
     let mut slot = ScriptSlot { name: "CameraFollow".into(), enabled: true, ..Default::default() };
     slot.props.insert("offset".into(), PropVal::Vec3([0.0, 4.0, 8.0]));
     s.insert(cam, Scripts(vec![slot]));
+    demo_hud(&mut s);
     s.update_transforms();
     s
+}
+
+/// Hoja de estilos, tema y fuente de la interfaz de la demo (tema `neon`).
+fn demo_ui(p: &mut Project) -> Result<(), String> {
+    use crate::ui::{DIR_UI, EXT_ESTILO, EXT_TEMA, estilo::Tema};
+    write(&p.root.join(format!("{DIR_UI}/estilos/neon.{EXT_ESTILO}")), include_str!("ui/demo_neon.mestilo"))?;
+    let mut tema = Tema::default();
+    for (k, v) in [("Panel", "neon_panel"), ("Texto", "neon_texto"), ("Boton", "neon_boton"), ("Barra", "neon_barra"), ("Deslizador", "neon_deslizador"), ("Casilla", "neon_casilla")] {
+        tema.tipos.insert(k.into(), v.into());
+    }
+    write(&p.root.join(format!("{DIR_UI}/temas/neon.{EXT_TEMA}")), &serde_json::to_string_pretty(&tema).map_err(|e| e.to_string())?)?;
+    // Fuente propia del proyecto (Hack, licencia MIT + Bitstream Vera).
+    let f = p.root.join(format!("{DIR_UI}/fuentes/Hack-Regular.ttf"));
+    if let Some(d) = f.parent() {
+        std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&f, epaint_default_fonts::HACK_REGULAR).map_err(|e| format!("{}: {e}", f.display()))?;
+    write(&p.root.join(format!("{DIR_UI}/fuentes/Hack-LICENSE.txt")), "Hack (https://github.com/source-foundry/Hack): MIT License + Bitstream Vera License.\n")?;
+    p.file.tema_ui = "neon".into();
+    p.save()
+}
+
+/// HUD de la demo: puntos, barra de vida, radar dibujado por script y menú
+/// de pausa (Esc) con botones. Lo controla el script `Hud`.
+fn demo_hud(s: &mut Scene) {
+    use crate::ui::*;
+    let hud = s.spawn("HUD");
+    s.insert(hud, Lienzo::default());
+    s.insert(hud, Scripts(vec![ScriptSlot { name: "Hud".into(), enabled: true, ..Default::default() }]));
+    let hijo = |s: &mut Scene, padre: EntityId, nombre: &str, r: RectUi, w: Option<WidgetUi>| {
+        let e = s.spawn(nombre);
+        s.insert(e, r);
+        if let Some(w) = w {
+            s.insert(e, w);
+        }
+        s.set_parent(e, Some(padre), false);
+        e
+    };
+    let texto = |t: &str, estilo: &str| WidgetUi { clase: ClaseWidget::Texto(Texto { texto: t.into(), ..Default::default() }), estilo: estilo.into(), ..Default::default() };
+
+    hijo(s, hud, "Puntos", RectUi::anclado([0.0, 0.0], [0.0, 0.0], [40.0, 30.0], [520.0, 56.0]), Some(texto("PUNTOS 0000", "neon_puntos")));
+    let vida = WidgetUi { clase: ClaseWidget::Barra(Barra { valor: 1.0, ..Default::default() }), ..Default::default() };
+    hijo(s, hud, "Vida", RectUi::anclado([0.0, 0.0], [0.0, 0.0], [40.0, 96.0], [380.0, 26.0]), Some(vida));
+    hijo(s, hud, "Radar", RectUi::anclado([1.0, 0.0], [1.0, 0.0], [-30.0, 30.0], [240.0, 240.0]), Some(WidgetUi::nuevo(TipoWidget::Personalizado)));
+    let ayuda = texto("Esc: pausa", "");
+    let mut ayuda_r = RectUi::anclado([0.0, 1.0], [0.0, 1.0], [40.0, -24.0], [400.0, 36.0]);
+    ayuda_r.opacidad = 0.7;
+    let a = hijo(s, hud, "Ayuda", ayuda_r, Some(ayuda));
+    if let Some(mut w) = s.get_mut::<WidgetUi>(a) {
+        w.local.estados.normal.tam_texto = Some(22.0);
+    }
+
+    // Pausa: velo a pantalla completa con el menú centrado.
+    let mut velo_r = RectUi::estirado();
+    velo_r.visible = false;
+    let velo = hijo(s, hud, "Pausa", velo_r, Some(WidgetUi { estilo: "neon_velo".into(), ..WidgetUi::nuevo(TipoWidget::Panel) }));
+    let menu = hijo(s, velo, "Menú", RectUi::centrado(460.0, 420.0), Some(WidgetUi::nuevo(TipoWidget::Panel)));
+    s.insert(menu, Contenedor { tipo: TipoContenedor::Vertical, relleno: [36.0, 30.0, 36.0, 34.0], espacio: [0.0, 18.0], cruzado: Alinear::Estirar, ajustar: true, ..Default::default() });
+    let mut t = texto("PAUSA", "neon_titulo");
+    if let ClaseWidget::Texto(x) = &mut t.clase {
+        x.alinear_h = AlinH::Centro;
+    }
+    hijo(s, menu, "Título", RectUi::centrado(380.0, 70.0), Some(t));
+    let boton = |t: &str| WidgetUi { clase: ClaseWidget::Boton(Boton { texto: t.into() }), ..Default::default() };
+    hijo(s, menu, "Continuar", RectUi::centrado(380.0, 60.0), Some(boton("Continuar")));
+    hijo(s, menu, "Reiniciar", RectUi::centrado(380.0, 60.0), Some(boton("Reiniciar puntos")));
+    let radar = WidgetUi { clase: ClaseWidget::Casilla(Casilla { activa: true, texto: "Radar".into() }), ..Default::default() };
+    hijo(s, menu, "Ver radar", RectUi::centrado(380.0, 40.0), Some(radar));
 }
 
 /// Material para modelos de la biblioteca: el color sale de sus texturas
@@ -617,7 +688,101 @@ impl Script for Paseante {
     }
 }
 
-export_scripts!(Rotator, Bobber, PlayerController, CameraFollow, Paseante);
+/// HUD de la demo: puntos por cajas derribadas, vida que baja al caer del
+/// mapa, radar dibujado a mano y menú de pausa con Esc.
+#[derive(Default)]
+pub struct Hud {
+    cajas: Vec<(Entity, Vec3)>,
+    jugador: Option<Entity>,
+    vida: f32,
+    cayendo: bool,
+    pausa: bool,
+    base: u32,
+}
+
+impl Script for Hud {
+    fn start(&mut self, ctx: &mut Ctx) {
+        self.jugador = ctx.find("Jugador");
+        self.vida = 1.0;
+        for i in 1..=10 {
+            if let Some(c) = ctx.find(&format!("Caja {i}")) {
+                self.cajas.push((c, ctx.position_of(c)));
+            }
+        }
+    }
+    fn update(&mut self, ctx: &mut Ctx) {
+        // Pausa: Esc o el botón Continuar.
+        let continuar = ctx.ui("Continuar").is_some_and(|b| ctx.ui_clicked(b));
+        if ctx.key_pressed(Key::Escape) || (self.pausa && continuar) {
+            self.pausa = !self.pausa;
+            if let Some(p) = ctx.ui("Pausa") {
+                ctx.ui_set_visible(p, self.pausa);
+            }
+            ctx.set_time_scale(if self.pausa { 0.0 } else { 1.0 });
+        }
+        // Cajas fuera de su sitio = puntos.
+        let movidas = self.cajas.iter().filter(|(c, p0)| ctx.exists(*c) && (ctx.position_of(*c) - *p0).length() > 0.5).count() as u32;
+        if ctx.ui("Reiniciar").is_some_and(|b| ctx.ui_clicked(b)) {
+            self.base = movidas;
+        }
+        if let Some(t) = ctx.ui("Puntos") {
+            ctx.ui_set_text(t, &format!("PUNTOS {:04}", movidas.saturating_sub(self.base) * 100));
+        }
+        // Vida: cada caída del mapa quita un cuarto; se recupera despacio.
+        if let Some(j) = self.jugador.filter(|j| ctx.exists(*j)) {
+            let y = ctx.position_of(j).y;
+            if y < -5.0 && !self.cayendo {
+                self.vida = (self.vida - 0.25).max(0.0);
+            }
+            self.cayendo = y < -5.0;
+        }
+        self.vida = (self.vida + ctx.dt * 0.02).min(1.0);
+        if let Some(v) = ctx.ui("Vida") {
+            ctx.ui_set_value(v, self.vida);
+        }
+        self.radar(ctx);
+    }
+}
+
+impl Hud {
+    /// Radar: anillos, las cajas como puntos y el jugador en el centro.
+    fn radar(&self, ctx: &mut Ctx) {
+        let Some(r) = ctx.ui("Radar") else { return };
+        let ver = ctx.ui("Ver radar").map(|c| ctx.ui_value(c) > 0.5).unwrap_or(true);
+        ctx.ui_set_visible(r, ver);
+        let Some(j) = self.jugador.filter(|j| ctx.exists(*j)) else { return };
+        let centro = ctx.position_of(j);
+        let rect = ctx.ui_rect(r);
+        let (cx, cy, rad) = (rect.w * 0.5, rect.h * 0.5, rect.w.min(rect.h) * 0.5 - 6.0);
+        let alcance = 12.0;
+        let t = ctx.time;
+        let puntos: Vec<(f32, f32)> = self
+            .cajas
+            .iter()
+            .filter(|(c, _)| ctx.exists(*c))
+            .map(|(c, _)| ctx.position_of(*c) - centro)
+            .filter(|d| d.x * d.x + d.z * d.z < alcance * alcance)
+            .map(|d| (cx + d.x / alcance * rad, cy + d.z / alcance * rad))
+            .collect();
+        ctx.ui_draw(r, |p| {
+            p.circle(cx, cy, rad, [0.02, 0.03, 0.08, 0.85]);
+            p.ring(cx, cy, rad, 2.0, [0.0, 0.95, 0.85, 0.9]);
+            p.ring(cx, cy, rad * 0.5, 1.0, [0.0, 0.95, 0.85, 0.35]);
+            p.line(cx - rad, cy, cx + rad, cy, 1.0, [0.0, 0.95, 0.85, 0.25]);
+            p.line(cx, cy - rad, cx, cy + rad, 1.0, [0.0, 0.95, 0.85, 0.25]);
+            // Barrido giratorio.
+            let a = (t * 120.0) % 360.0;
+            p.arc(cx, cy, rad * 0.75, a - 40.0, a, rad * 0.5, [0.0, 0.95, 0.85, 0.18]);
+            for (x, y) in &puntos {
+                p.circle(*x, *y, 5.0, [1.0, 0.78, 0.18, 1.0]);
+            }
+            p.circle(cx, cy, 7.0, [0.98, 0.25, 0.55, 1.0]);
+            p.text_centered(0.0, rect.h - 30.0, rect.w, 24.0, 16.0, "RADAR", [0.0, 0.95, 0.85, 0.8]);
+        });
+    }
+}
+
+export_scripts!(Rotator, Bobber, PlayerController, CameraFollow, Paseante, Hud);
 "#;
 
 #[cfg(test)]
@@ -650,6 +815,24 @@ mod tests {
         assert_eq!(lib.get::<Animator>(hero).unwrap().clip, "Walk_Loop");
         let refs = crate::biblioteca::refs_in_scene(&lib.to_file());
         assert!(refs.len() > 15 && refs.iter().all(|r| r.starts_with("biblioteca://")), "{refs:?}");
+
+        // HUD de la demo con el tema propio `neon` y la fuente del proyecto.
+        assert_eq!(p2.file.tema_ui, "neon");
+        let mut ui = crate::ui::SistemaUi::del_proyecto(&p2.root, &p2.file.tema_ui);
+        let boton = scene.find_by_name("Continuar").unwrap();
+        let w = scene.get::<crate::ui::WidgetUi>(boton).unwrap();
+        let st = ui.recursos.resolver(&w, "", None, crate::ui::estilo::Estado::Encima);
+        assert_eq!(st.fuente.as_deref(), Some("ui/fuentes/Hack-Regular.ttf"));
+        assert_eq!(st.escala, Some(1.06));
+        // Un título hereda de neon_texto (fuente) y redefine el tamaño.
+        let titulo = scene.get::<crate::ui::WidgetUi>(scene.find_by_name("Título").unwrap()).unwrap();
+        let st = ui.recursos.resolver(&titulo, "", None, crate::ui::estilo::Estado::Normal);
+        assert_eq!((st.tam_texto, st.fuente.is_some()), (Some(54.0), true));
+        ui.actualizar(&scene, [1920.0, 1080.0], 0.016);
+        let (a, b) = ui.rect(scene.find_by_name("Radar").unwrap()).unwrap();
+        assert_eq!((a, b), ([1650.0, 30.0], [1890.0, 270.0]));
+        // La pausa empieza oculta: no hay nada suyo en la lista de dibujo bajo el centro.
+        assert_ne!(ui.elemento_en([960.0, 540.0]), Some(boton));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

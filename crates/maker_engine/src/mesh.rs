@@ -49,6 +49,11 @@ pub struct MeshData {
     pub normals: Vec<Vec3>,
     pub uvs: Vec<Vec2>,
     pub indices: Vec<u32>,
+    /// Color de vértice RGBA (vacío = blanco).
+    pub colors: Vec<[u8; 4]>,
+    /// Huesos y pesos de la piel (vacíos = malla estática).
+    pub joints: Vec<[u16; 4]>,
+    pub weights: Vec<[f32; 4]>,
 }
 
 impl MeshData {
@@ -135,45 +140,9 @@ impl MeshData {
     }
 
     /// Importa todas las mallas de un glTF/GLB, aplicando las transformaciones
-    /// de los nodos de la escena por defecto, en una sola malla.
+    /// de los nodos de la escena por defecto, en una sola malla (sin materiales).
     pub fn load_gltf(path: &Path) -> Result<MeshData, String> {
-        let (doc, buffers, _images) = gltf::import(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let mut out = MeshData::default();
-        let scene = doc.default_scene().or_else(|| doc.scenes().next()).ok_or("el glTF no tiene escenas")?;
-        let mut stack: Vec<(gltf::Node, Mat4)> = scene.nodes().map(|n| (n, Mat4::IDENTITY)).collect();
-        while let Some((node, parent)) = stack.pop() {
-            let m = parent * Mat4::from_cols_array_2d(&node.transform().matrix());
-            if let Some(mesh) = node.mesh() {
-                for prim in mesh.primitives() {
-                    if prim.mode() != gltf::mesh::Mode::Triangles {
-                        continue;
-                    }
-                    let reader = prim.reader(|b| Some(&buffers[b.index()]));
-                    let Some(pos) = reader.read_positions() else { continue };
-                    let mut part = MeshData { positions: pos.map(Vec3::from).collect(), ..Default::default() };
-                    part.indices = match reader.read_indices() {
-                        Some(i) => i.into_u32().collect(),
-                        None => (0..part.positions.len() as u32).collect(),
-                    };
-                    match reader.read_normals() {
-                        Some(n) => part.normals = n.map(Vec3::from).collect(),
-                        None => part.compute_normals(),
-                    }
-                    part.uvs = match reader.read_tex_coords(0) {
-                        Some(t) => t.into_f32().map(Vec2::from).collect(),
-                        None => vec![Vec2::ZERO; part.positions.len()],
-                    };
-                    out.append(&part, m);
-                }
-            }
-            for c in node.children() {
-                stack.push((c, m));
-            }
-        }
-        if out.indices.is_empty() {
-            return Err(format!("{}: no hay triángulos", path.display()));
-        }
-        Ok(out)
+        crate::model::ModelData::load(path).map(|m| m.mesh)
     }
 }
 

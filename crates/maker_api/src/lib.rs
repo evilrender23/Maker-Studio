@@ -298,6 +298,10 @@ pub struct HostApi {
     pub exists: unsafe extern "C" fn(*mut c_void, Entity) -> bool,
     // Añadir solo al final: el orden de los campos es parte de la ABI.
     pub set_shading: unsafe extern "C" fn(*mut c_void, Entity, u32),
+    /// Reproduce un clip (nombre UTF-8) con un fundido de N segundos. `false`
+    /// si la entidad no tiene Animator.
+    pub play_animation: unsafe extern "C" fn(*mut c_void, Entity, *const u8, usize, f32) -> bool,
+    pub set_animation_speed: unsafe extern "C" fn(*mut c_void, Entity, f32),
 }
 
 /// Tipos de propiedad exportada (como `[SerializeField]` / `@export`).
@@ -498,6 +502,16 @@ impl<'a> Ctx<'a> {
     /// Cambia el modelo de sombreado del material de `e` (toon, PBR…).
     pub fn set_shading(&mut self, e: Entity, shading: Shading) {
         unsafe { (self.api.set_shading)(self.api.ctx, e, shading as u32) }
+    }
+    /// Reproduce el clip `name` del Animator de `e`, fundiéndolo con el
+    /// anterior durante `crossfade` segundos. Devuelve `false` si `e` no tiene
+    /// Animator.
+    pub fn play_animation(&mut self, e: Entity, name: &str, crossfade: f32) -> bool {
+        unsafe { (self.api.play_animation)(self.api.ctx, e, name.as_ptr(), name.len(), crossfade) }
+    }
+    /// Velocidad de reproducción del Animator de `e` (1 = normal, negativa = hacia atrás).
+    pub fn set_animation_speed(&mut self, e: Entity, speed: f32) {
+        unsafe { (self.api.set_animation_speed)(self.api.ctx, e, speed) }
     }
     pub fn spawn(&mut self, shape: Primitive, at: Vec3, flags: u32) -> Entity {
         unsafe { (self.api.spawn)(self.api.ctx, shape as u32, at, flags) }

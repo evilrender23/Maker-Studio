@@ -60,6 +60,8 @@ pub struct EntityRecord {
     pub collider: Option<Collider>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scripts: Option<Scripts>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub animator: Option<Animator>,
 }
 
 fn yes() -> bool {
@@ -387,6 +389,7 @@ impl Scene {
             rigid_body: self.get::<RigidBody>(id),
             collider: self.get::<Collider>(id),
             scripts: self.get::<Scripts>(id),
+            animator: self.get::<Animator>(id),
         })
     }
 
@@ -415,6 +418,9 @@ impl Scene {
             b.add(c);
         }
         if let Some(c) = &r.scripts {
+            b.add(c.clone());
+        }
+        if let Some(c) = &r.animator {
             b.add(c.clone());
         }
         let e = self.world.spawn(b.build());

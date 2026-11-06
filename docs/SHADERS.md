@@ -11,6 +11,12 @@ elegido. Desde un script: `ctx.set_shading(e, Shading::Toon)`.
 | **Sin luz** | Color plano + emisión. Sustituye a la casilla «Sin luz» anterior (`unlit: true` se convierte al cargar). |
 | **Plumilla** | Rayado a tinta sobre el color base («papel»). |
 
+Todos los modelos usan como color base textura × factor del material glTF ×
+color de vértice × color del Inspector; el toon aplica sus bandas sobre ese
+color texturizado. Los materiales con recorte alfa descartan píxeles (también
+en el mapa de sombras) y los de mezcla se dibujan después de los opacos,
+ordenados de atrás adelante.
+
 ## Toon
 
 - **Bandas** (2–4): niveles de luz del sol, sombra incluida. El terminador

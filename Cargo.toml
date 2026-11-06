@@ -16,7 +16,7 @@ maker_render = { path = "crates/maker_render" }
 glam = { version = "0.33", features = ["serde", "bytemuck"] }
 hecs = "0.11"
 rapier3d = "0.36"
-gltf = { version = "1.4", default-features = false, features = ["import", "utils"] }
+gltf = { version = "1.4", default-features = false, features = ["import", "utils", "names"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 libloading = "0.8"

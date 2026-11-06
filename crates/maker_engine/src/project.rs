@@ -121,6 +121,9 @@ impl Project {
         write(&project.root.join(".gitignore"), "scripts/target/\nexport/\n")?;
         let scene = if demo { demo_scene() } else { Scene::starter() };
         scene.save(&project.main_scene_path())?;
+        if demo {
+            library_scene().save(&project.root.join("scenes/biblioteca.mscene"))?;
+        }
         Ok(project)
     }
 
@@ -261,6 +264,137 @@ pub fn demo_scene() -> Scene {
     let mut slot = ScriptSlot { name: "CameraFollow".into(), enabled: true, ..Default::default() };
     slot.props.insert("offset".into(), PropVal::Vec3([0.0, 4.0, 8.0]));
     s.insert(cam, Scripts(vec![slot]));
+    s.update_transforms();
+    s
+}
+
+/// Material para modelos de la biblioteca: el color sale de sus texturas
+/// (tinte blanco) y la rugosidad alta evita brillos de plástico.
+pub fn library_material() -> Material {
+    Material { base_color: [1.0; 4], roughness: 0.85, ..Default::default() }
+}
+
+/// Escena de escaparate de la biblioteca integrada: esquina de una casa
+/// medieval, vegetación con hojas recortadas, accesorios en toon y un
+/// personaje con piel que camina (script `Paseante`).
+pub fn library_scene() -> Scene {
+    use crate::biblioteca::{DEFAULT_CLIPS, uri};
+    let mut s = Scene::starter();
+    let cube = s.find_by_name("Cubo").unwrap();
+    s.despawn_recursive(cube);
+    s.env.sky_top = [0.33, 0.55, 0.9];
+    s.env.sky_horizon = [0.8, 0.88, 0.96];
+    s.env.ground = [0.36, 0.42, 0.3];
+    s.env.ambient_intensity = 0.7;
+    s.env.fog_density = 0.012;
+    s.env.fog_color = [0.78, 0.86, 0.95];
+    if let Some(ground) = s.find_by_name("Suelo") {
+        s.set_transform(ground, Transform::default().with_scale(Vec3::new(80.0, 1.0, 80.0)));
+        if let Some(mut mr) = s.get::<MeshRenderer>(ground) {
+            mr.material = Material { base_color: [0.38, 0.55, 0.25, 1.0], roughness: 0.95, ..Default::default() };
+            s.insert(ground, mr);
+        }
+    }
+    if let Some(sun) = s.find_by_name("Sol") {
+        let mut t = s.transform(sun);
+        t.set_euler_degrees(Vec3::new(-38.0, -40.0, 0.0));
+        s.set_transform(sun, t);
+        s.insert(sun, Light { intensity: 3.4, ..Light::directional() });
+    }
+    if let Some(cam) = s.find_by_name("Cámara principal") {
+        let eye = Vec3::new(3.6, 3.3, 8.5);
+        let target = Vec3::new(-1.6, 1.3, -3.2);
+        let d = (target - eye).normalize();
+        let mut t = Transform::from_translation(eye);
+        t.rotation = Quat::from_euler(glam::EulerRot::YXZ, (-d.x).atan2(-d.z), d.y.asin(), 0.0);
+        s.set_transform(cam, t);
+        if let Some(mut c) = s.get::<Camera>(cam) {
+            c.fov_y = 50.0;
+            s.insert(cam, c);
+        }
+    }
+    let add = |s: &mut Scene, name: &str, rel: &str, pos: [f32; 3], yaw: f32, scale: f32, toon: bool| -> EntityId {
+        let e = s.spawn(name);
+        s.set_transform(e, Transform::from_translation(Vec3::from(pos)).with_rotation(Quat::from_rotation_y(yaw.to_radians())).with_scale(Vec3::splat(scale)));
+        let mut material = library_material();
+        if toon {
+            material.shading = ShadingModel::Toon;
+            material.style.outline_width = 2.0;
+            material.style.rim_strength = 0.35;
+        }
+        s.insert(e, MeshRenderer { mesh: MeshSource::Model(uri(rel)), material, cast_shadows: true });
+        e
+    };
+    // Casa: dos paredes en esquina, suelo, tejado.
+    let house = s.spawn("Casa");
+    s.set_transform(house, Transform::from_translation(Vec3::new(-4.0, 0.0, -6.0)));
+    let parts: [(&str, &str, [f32; 3], f32); 12] = [
+        ("Pared puerta", "medieval/Wall_Plaster_Door_Round.glb", [-1.0, 0.0, 2.0], 0.0),
+        ("Puerta", "medieval/Door_1_Round.glb", [-1.53, 0.0, 1.95], 0.0),
+        ("Pared ventana", "medieval/Wall_Plaster_Window_Wide_Round.glb", [1.0, 0.0, 2.0], 0.0),
+        ("Ventana", "medieval/Window_Wide_Round1.glb", [1.0, 0.0, 2.0], 0.0),
+        ("Contraventanas", "medieval/WindowShutters_Wide_Round_Open.glb", [1.0, 0.0, 2.0], 0.0),
+        ("Pared lateral", "medieval/Wall_Plaster_WoodGrid.glb", [2.0, 0.0, 1.0], 90.0),
+        ("Pared lateral 2", "medieval/Wall_Plaster_Window_Wide_Round.glb", [2.0, 0.0, -1.0], 90.0),
+        ("Ventana lateral", "medieval/Window_Wide_Round1.glb", [2.0, 0.0, -1.0], 90.0),
+        ("Esquina", "medieval/Corner_Exterior_Wood.glb", [2.0, 0.0, 2.0], 0.0),
+        ("Tejado", "medieval/Roof_RoundTiles_4x4.glb", [0.0, 3.1, 0.0], 0.0),
+        ("Chimenea", "medieval/Prop_Chimney.glb", [-1.0, 4.4, -1.0], 0.0),
+        ("Enredadera", "medieval/Prop_Vine1.glb", [1.6, 2.9, 2.12], 0.0),
+    ];
+    for (name, rel, pos, yaw) in parts {
+        let e = add(&mut s, name, rel, pos, yaw, 1.0, false);
+        s.set_parent(e, Some(house), false);
+    }
+    for (i, (x, z)) in [(-1.0, 1.0), (1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)].into_iter().enumerate() {
+        let e = add(&mut s, &format!("Suelo {}", i + 1), "medieval/Floor_WoodDark.glb", [x, 0.02, z], 0.0, 1.0, false);
+        s.set_parent(e, Some(house), false);
+    }
+    // Vegetación (hojas con recorte alfa).
+    let nature: [(&str, &str, [f32; 3], f32, f32); 14] = [
+        ("Árbol", "naturaleza/CommonTree_1.glb", [4.5, 0.0, -7.5], 20.0, 1.0),
+        ("Pino", "naturaleza/Pine_2.glb", [9.0, 0.0, -12.0], 0.0, 1.1),
+        ("Pino 2", "naturaleza/Pine_4.glb", [-11.0, 0.0, -12.0], 40.0, 1.0),
+        ("Árbol 2", "naturaleza/CommonTree_3.glb", [-9.5, 0.0, -3.0], 0.0, 0.9),
+        ("Arbusto", "naturaleza/Bush_Common_Flowers.glb", [1.0, 0.0, -4.2], 0.0, 0.9),
+        ("Arbusto 2", "naturaleza/Bush_Common.glb", [-6.9, 0.0, -2.6], 30.0, 1.0),
+        ("Flores", "naturaleza/Flower_3_Group.glb", [2.7, 0.0, -1.4], 0.0, 0.8),
+        ("Flores 2", "naturaleza/Flower_4_Group.glb", [-6.0, 0.0, 0.2], 60.0, 0.8),
+        ("Helecho", "naturaleza/Fern_1.glb", [3.6, 0.0, -4.4], 10.0, 0.8),
+        ("Hierba", "naturaleza/Grass_Common_Tall.glb", [1.8, 0.0, 0.6], 0.0, 0.8),
+        ("Hierba 2", "naturaleza/Grass_Common_Short.glb", [-1.2, 0.0, 1.2], 0.0, 1.0),
+        ("Hierba 3", "naturaleza/Grass_Wispy_Tall.glb", [-6.6, 0.0, -1.0], 0.0, 0.9),
+        ("Roca", "naturaleza/Rock_Medium_1.glb", [6.5, 0.0, -3.5], 30.0, 0.6),
+        ("Trébol", "naturaleza/Clover_1.glb", [0.4, 0.0, 2.6], 0.0, 0.9),
+    ];
+    for (name, rel, pos, yaw, scale) in nature {
+        add(&mut s, name, rel, pos, yaw, scale, false);
+    }
+    for (i, (x, z)) in [(-5.0, -2.7), (-4.6, -0.7), (-3.9, 1.3), (-2.9, 3.2)].into_iter().enumerate() {
+        add(&mut s, &format!("Camino {}", i + 1), "naturaleza/RockPath_Round_Wide.glb", [x, 0.0, z], i as f32 * 35.0, 0.9, false);
+    }
+    // Accesorios en toon.
+    let props: [(&str, &str, [f32; 3], f32); 6] = [
+        ("Barril", "props_fantasia/Barrel.glb", [-1.4, 0.0, -3.4], 0.0),
+        ("Barril de manzanas", "props_fantasia/Barrel_Apples.glb", [-0.6, 0.0, -3.0], 0.0),
+        ("Caja", "props_fantasia/Crate_Wooden.glb", [-1.3, 0.0, -2.4], 20.0),
+        ("Banco", "props_fantasia/Bench.glb", [-3.0, 0.0, -3.2], 0.0),
+        ("Carro", "props_fantasia/Stall_Cart_Empty.glb", [3.4, 0.0, -2.0], -60.0),
+        ("Farol", "props_fantasia/Lantern_Wall.glb", [-4.0, 1.2, -3.95], 0.0),
+    ];
+    for (name, rel, pos, yaw) in props {
+        add(&mut s, name, rel, pos, yaw, 1.0, true);
+    }
+    // Personajes con piel animados con la Universal Animation Library: un
+    // explorador que pasea (script) y una maniquí sentada en el banco.
+    let hero = add(&mut s, "Personaje", "atuendos/Male_Ranger.glb", [0.6, 0.0, 0.2], 200.0, 1.0, true);
+    s.insert(hero, crate::components::Animator::new(DEFAULT_CLIPS, "Walk_Loop"));
+    let sitter = add(&mut s, "Maniquí", "animaciones2/Mannequin_F.glb", [-3.0, 0.0, -2.95], 0.0, 1.0, false);
+    s.insert(sitter, crate::components::Animator::new(DEFAULT_CLIPS, "Sitting_Idle_Loop"));
+    let mut slot = ScriptSlot { name: "Paseante".into(), enabled: true, ..Default::default() };
+    slot.props.insert("radius".into(), PropVal::Float(2.2));
+    slot.props.insert("speed".into(), PropVal::Float(1.2));
+    s.insert(hero, Scripts(vec![slot]));
     s.update_transforms();
     s
 }
@@ -431,7 +565,56 @@ impl Script for CameraFollow {
     }
 }
 
-export_scripts!(Rotator, Bobber, PlayerController, CameraFollow);
+/// Camina en círculo con el clip `Walk_Loop` del Animator y se para a
+/// descansar (`Idle_Loop`) cada vuelta, con fundidos entre clips.
+#[derive(Default)]
+pub struct Paseante {
+    radius: f32,
+    speed: f32,
+    center: Vec3,
+    angle: f32,
+    rest: f32,
+}
+
+impl Script for Paseante {
+    fn props(&mut self, p: &mut Props) {
+        p.float("radius", &mut self.radius);
+        p.float("speed", &mut self.speed);
+    }
+    fn start(&mut self, ctx: &mut Ctx) {
+        if self.radius == 0.0 {
+            self.radius = 2.0;
+        }
+        if self.speed == 0.0 {
+            self.speed = 1.2;
+        }
+        self.center = ctx.position() - Vec3::new(self.radius, 0.0, 0.0);
+        let me = ctx.entity;
+        ctx.play_animation(me, "Walk_Loop", 0.0);
+    }
+    fn update(&mut self, ctx: &mut Ctx) {
+        let me = ctx.entity;
+        if self.rest > 0.0 {
+            self.rest -= ctx.dt;
+            if self.rest <= 0.0 {
+                ctx.play_animation(me, "Walk_Loop", 0.3);
+            }
+            return;
+        }
+        let before = self.angle;
+        self.angle += self.speed / self.radius * ctx.dt;
+        if (before / std::f32::consts::TAU).floor() != (self.angle / std::f32::consts::TAU).floor() {
+            self.rest = 2.5;
+            ctx.play_animation(me, "Idle_Loop", 0.3);
+        }
+        let (s, c) = self.angle.sin_cos();
+        ctx.set_position(self.center + Vec3::new(c * self.radius, 0.0, -s * self.radius));
+        // Mirar en la dirección de avance (tangente del círculo).
+        ctx.set_rotation(Quat::from_euler(0.0, (-s).atan2(-c), 0.0));
+    }
+}
+
+export_scripts!(Rotator, Bobber, PlayerController, CameraFollow, Paseante);
 "#;
 
 #[cfg(test)]
@@ -457,7 +640,13 @@ mod tests {
         assert_eq!(scene.get::<MeshRenderer>(player).unwrap().material.shading, ShadingModel::Toon);
         let sphere = scene.find_by_name("Esfera").unwrap();
         assert_eq!(scene.get::<MeshRenderer>(sphere).unwrap().material.shading, ShadingModel::Hatching);
-        assert_eq!(p2.scenes(), vec!["scenes/main.mscene".to_string()]);
+        assert_eq!(p2.scenes(), vec!["scenes/biblioteca.mscene".to_string(), "scenes/main.mscene".to_string()]);
+        // El escaparate usa la biblioteca integrada y un personaje animado.
+        let lib = Scene::load(&p2.root.join("scenes/biblioteca.mscene")).unwrap();
+        let hero = lib.find_by_name("Personaje").unwrap();
+        assert_eq!(lib.get::<Animator>(hero).unwrap().clip, "Walk_Loop");
+        let refs = crate::biblioteca::refs_in_scene(&lib.to_file());
+        assert!(refs.len() > 15 && refs.iter().all(|r| r.starts_with("biblioteca://")), "{refs:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

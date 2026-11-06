@@ -27,6 +27,8 @@ pub enum Icon {
     Maximizar,
     Restaurar,
     Cerrar,
+    Personaje,
+    Biblioteca,
 }
 
 impl Icon {
@@ -48,6 +50,8 @@ impl Icon {
             Icon::Maximizar => &px::MAX,
             Icon::Restaurar => &px::RESTAURAR,
             Icon::Cerrar => &px::CERRAR,
+            Icon::Personaje => &px::PERSONAJE,
+            Icon::Biblioteca => &px::BIBLIOTECA,
         }
     }
 }
@@ -128,7 +132,7 @@ mod tests {
 
     #[test]
     fn iconos_de_16x16() {
-        for i in [Icon::Camara, Icon::Sol, Icon::Cubo, Icon::Toro, Icon::Modelo, Icon::Cerrar] {
+        for i in [Icon::Camara, Icon::Sol, Icon::Cubo, Icon::Toro, Icon::Modelo, Icon::Cerrar, Icon::Personaje, Icon::Biblioteca] {
             let p = rgba(i);
             assert_eq!(p.len(), 16 * 16 * 4);
             assert!(p.chunks(4).any(|c| c[3] == 255), "{i:?} vacío");

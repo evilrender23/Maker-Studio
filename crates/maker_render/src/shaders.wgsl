@@ -3,9 +3,16 @@
 // hasta 16 luces puntuales, ambiente hemisférico, niebla y tonemap ACES.
 // Modelos estilizados: toon (cel con bandas, borde y contorno de casco
 // invertido) y plumilla (rayado en pantalla). Cada modelo es un pipeline.
+// Todos leen el color base de la textura del material (× factor × color de
+// vértice × tinte de la entidad), con recorte alfa opcional, y tienen una
+// variante con piel (paleta de huesos en un búfer de almacenamiento).
 
 const PI: f32 = 3.14159265;
 const MAX_POINTS: u32 = 16u;
+
+// Constantes de especialización por pipeline.
+override ALPHA_TEST: bool = false;
+override BLEND: bool = false;
 
 struct PointLight {
     pos_range: vec4<f32>,
@@ -38,17 +45,33 @@ struct Object {
     rim: vec4<f32>,          // rgb lineal, fuerza
     style: vec4<f32>,        // suavidad, especular, tamaño especular, ancho del borde
     outline: vec4<f32>,      // rgb lineal, ancho (px a 1080 p)
+    skin: vec4<u32>,         // x: primer hueso en `joints`
+};
+
+struct Material {
+    factor: vec4<f32>,       // color base lineal + alfa del glTF
+    params: vec4<f32>,       // x: umbral de recorte alfa
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(0) @binding(1) var shadow_map: texture_depth_2d;
 @group(0) @binding(2) var shadow_sampler: sampler_comparison;
 @group(1) @binding(0) var<uniform> obj: Object;
+@group(1) @binding(1) var<storage, read> joints: array<mat4x4<f32>>;
+@group(2) @binding(0) var base_tex: texture_2d<f32>;
+@group(2) @binding(1) var base_samp: sampler;
+@group(2) @binding(2) var<uniform> mat: Material;
 
 struct VIn {
     @location(0) pos: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
+    @location(3) color: vec4<f32>,
+};
+
+struct SkinIn {
+    @location(4) joints: vec4<u32>,
+    @location(5) weights: vec4<f32>,
 };
 
 struct VOut {
@@ -56,17 +79,59 @@ struct VOut {
     @location(0) world: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
+    @location(3) color: vec4<f32>,
 };
 
-@vertex
-fn vs_main(v: VIn) -> VOut {
-    let w = obj.model * vec4<f32>(v.pos, 1.0);
+const IDENTITY: mat4x4<f32> = mat4x4<f32>(
+    vec4<f32>(1.0, 0.0, 0.0, 0.0), vec4<f32>(0.0, 1.0, 0.0, 0.0),
+    vec4<f32>(0.0, 0.0, 1.0, 0.0), vec4<f32>(0.0, 0.0, 0.0, 1.0),
+);
+
+// Mezcla lineal de hasta 4 huesos (pesos renormalizados).
+fn skin_matrix(s: SkinIn) -> mat4x4<f32> {
+    let total = s.weights.x + s.weights.y + s.weights.z + s.weights.w;
+    if (total < 1e-4) {
+        return IDENTITY;
+    }
+    let b = obj.skin.x;
+    let m = joints[b + s.joints.x] * s.weights.x + joints[b + s.joints.y] * s.weights.y
+          + joints[b + s.joints.z] * s.weights.z + joints[b + s.joints.w] * s.weights.w;
+    return m * (1.0 / total);
+}
+
+fn shade_vertex(v: VIn, skin: mat4x4<f32>) -> VOut {
+    let w = obj.model * (skin * vec4<f32>(v.pos, 1.0));
     var o: VOut;
     o.clip = g.view_proj * w;
     o.world = w.xyz;
-    o.normal = normalize((obj.normal_m * vec4<f32>(v.normal, 0.0)).xyz);
+    o.normal = normalize((obj.normal_m * (skin * vec4<f32>(v.normal, 0.0))).xyz);
     o.uv = v.uv;
+    o.color = v.color;
     return o;
+}
+
+@vertex
+fn vs_main(v: VIn) -> VOut {
+    return shade_vertex(v, IDENTITY);
+}
+
+@vertex
+fn vs_main_skinned(v: VIn, s: SkinIn) -> VOut {
+    return shade_vertex(v, skin_matrix(s));
+}
+
+// Color base: textura × factor del material × color de vértice × tinte de la entidad.
+fn base_albedo(in: VOut) -> vec4<f32> {
+    let t = textureSample(base_tex, base_samp, in.uv);
+    return obj.base_color * mat.factor * t * in.color;
+}
+
+// Recorte alfa (hojas) al final del sombreado; alfa de salida solo al mezclar.
+fn finish(color: vec3<f32>, a: f32) -> vec4<f32> {
+    if (ALPHA_TEST && a < mat.params.x) {
+        discard;
+    }
+    return vec4<f32>(color, select(1.0, a, BLEND));
 }
 
 fn aces(x: vec3<f32>) -> vec3<f32> {
@@ -140,7 +205,8 @@ fn sky_color(dir: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_main(in: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    let albedo = obj.base_color.rgb;
+    let base = base_albedo(in);
+    let albedo = base.rgb;
     var n = normalize(in.normal);
     if (!front) {
         n = -n;
@@ -178,7 +244,7 @@ fn fs_main(in: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
         color += obj.emissive.rgb * obj.emissive.w;
         color = apply_fog(color, in.world);
     }
-    return vec4<f32>(aces(color * g.params.y), obj.base_color.a);
+    return finish(aces(color * g.params.y), base.a);
 }
 
 // Niebla exponencial.
@@ -229,7 +295,8 @@ fn posterize(x: f32, step: f32, s: f32) -> f32 {
 
 @fragment
 fn fs_toon(in: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    let albedo = obj.base_color.rgb;
+    let base = base_albedo(in);
+    let albedo = base.rgb;
     var n = normalize(in.normal);
     if (!front) {
         n = -n;
@@ -274,7 +341,7 @@ fn fs_toon(in: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     }
     color += obj.emissive.rgb * obj.emissive.w;
     color = apply_fog(color, in.world);
-    return vec4<f32>(aces(color * g.params.y), obj.base_color.a);
+    return finish(aces(color * g.params.y), base.a);
 }
 
 // ───────────────────────────── Plumilla (hatching) ─────────────────────────────
@@ -292,7 +359,8 @@ fn hatch_lines(p: vec2<f32>, dir: vec2<f32>, spacing: f32, width: f32) -> f32 {
 
 @fragment
 fn fs_hatch(in: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    let albedo = obj.base_color.rgb;
+    let base = base_albedo(in);
+    let albedo = base.rgb;
     var n = normalize(in.normal);
     if (!front) {
         n = -n;
@@ -326,7 +394,7 @@ fn fs_hatch(in: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
     var color = mix(albedo, obj.outline.rgb, ink);
     color += obj.emissive.rgb * obj.emissive.w;
     color = apply_fog(color, in.world);
-    return vec4<f32>(aces(color * g.params.y), obj.base_color.a);
+    return finish(aces(color * g.params.y), base.a);
 }
 
 // ───────────────────────────── Contorno de casco invertido ─────────────────────────────
@@ -341,8 +409,17 @@ struct InkIn {
 
 @vertex
 fn vs_ink(v: InkIn) -> @builtin(position) vec4<f32> {
-    let w = obj.model * vec4<f32>(v.pos, 1.0);
-    let n = normalize((obj.normal_m * vec4<f32>(v.smooth_normal, 0.0)).xyz);
+    return ink_vertex(v, IDENTITY);
+}
+
+@vertex
+fn vs_ink_skinned(v: InkIn, s: SkinIn) -> @builtin(position) vec4<f32> {
+    return ink_vertex(v, skin_matrix(s));
+}
+
+fn ink_vertex(v: InkIn, skin: mat4x4<f32>) -> vec4<f32> {
+    let w = obj.model * (skin * vec4<f32>(v.pos, 1.0));
+    let n = normalize((obj.normal_m * (skin * vec4<f32>(v.smooth_normal, 0.0))).xyz);
     var clip = g.view_proj * w;
     let dir = (g.view_proj * vec4<f32>(n, 0.0)).xy * g.viewport.xy;
     let len = length(dir);
@@ -362,10 +439,55 @@ fn fs_ink() -> @location(0) vec4<f32> {
 
 @vertex
 fn vs_outline(v: VIn) -> @builtin(position) vec4<f32> {
-    let w = obj.model * vec4<f32>(v.pos, 1.0);
-    let n = normalize((obj.normal_m * vec4<f32>(v.normal, 0.0)).xyz);
+    return outline_vertex(v, IDENTITY);
+}
+
+@vertex
+fn vs_outline_skinned(v: VIn, s: SkinIn) -> @builtin(position) vec4<f32> {
+    return outline_vertex(v, skin_matrix(s));
+}
+
+fn outline_vertex(v: VIn, skin: mat4x4<f32>) -> vec4<f32> {
+    let w = obj.model * (skin * vec4<f32>(v.pos, 1.0));
+    let n = normalize((obj.normal_m * (skin * vec4<f32>(v.normal, 0.0))).xyz);
     let dist = length(g.cam_pos.xyz - w.xyz);
     return g.view_proj * vec4<f32>(w.xyz + n * dist * 0.006, 1.0);
+}
+
+// ───────────────────────────── Mapa de sombras ─────────────────────────────
+// Se dibuja con un Globals propio cuyo `view_proj` es la matriz de la luz.
+
+struct ShadowOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) alpha: f32,
+};
+
+fn shadow_vertex(v: VIn, skin: mat4x4<f32>) -> ShadowOut {
+    var o: ShadowOut;
+    o.clip = g.view_proj * (obj.model * (skin * vec4<f32>(v.pos, 1.0)));
+    o.uv = v.uv;
+    o.alpha = v.color.a * obj.base_color.a;
+    return o;
+}
+
+@vertex
+fn vs_shadow(v: VIn) -> ShadowOut {
+    return shadow_vertex(v, IDENTITY);
+}
+
+@vertex
+fn vs_shadow_skinned(v: VIn, s: SkinIn) -> ShadowOut {
+    return shadow_vertex(v, skin_matrix(s));
+}
+
+// Solo para materiales con recorte: las hojas proyectan su silueta.
+@fragment
+fn fs_shadow_mask(in: ShadowOut) {
+    let a = textureSample(base_tex, base_samp, in.uv).a * mat.factor.a * in.alpha;
+    if (a < mat.params.x) {
+        discard;
+    }
 }
 
 @fragment

@@ -16,6 +16,8 @@ scripts de cada juego.
 |---|---|
 | ![Play en el editor](docs/img/play.png) | ![Juego exportado](docs/img/player.png) |
 | **Play en el editor**: cámara del juego, scripts y física en vivo | **`maker-player`**: el juego exportado, sin editor |
+| ![Biblioteca](docs/img/biblioteca.png) | ![Escena de la biblioteca](docs/img/biblioteca_juego.png) |
+| **Biblioteca**: 756 modelos CC0 de Quaternius | `scenes/biblioteca.mscene` de la demo, exportada |
 
 ## Qué tiene
 
@@ -32,7 +34,18 @@ scripts de cada juego.
   raycast), entrada, bucle de juego con `fixed_update` a 60 Hz.
 - **Render** (`maker_render`, wgpu → Vulkan/Metal/DX12/GL): PBR metal-rugosidad,
   sol con sombras PCF, 16 luces puntuales, cielo procedural, niebla, ACES,
-  MSAA 4×, frustum culling, contorno de selección, rejilla infinita.
+  MSAA 4×, frustum culling, contorno de selección, rejilla infinita. Modelos
+  glTF con varios materiales, texturas de color base con mipmaps y filtrado
+  anisótropo, colores de vértice, recorte alfa (follaje, también en sombras),
+  transparencia y materiales de doble cara.
+- **Biblioteca integrada**: 756 modelos CC0 de Quaternius (naturaleza,
+  pueblo medieval, ciudad, fantasía, ciencia ficción, personajes con
+  esqueleto, atuendos y más de 250 animaciones) en la pestaña **Biblioteca**,
+  con miniaturas, filtros y arrastrar al viewport. Ver
+  [docs/BIBLIOTECA.md](docs/BIBLIOTECA.md).
+- **Animación esquelética**: glTF con piel, skinning en GPU, componente
+  Animador con fundidos, clips de otro archivo emparejados por nombre de hueso
+  y control desde scripts.
 - **Modelos de sombreado** por material: PBR, **toon / cel** al estilo de
   *Breath of the Wild* (bandas duras, sombra tintada, luz de borde, brillo en
   banda y contorno de casco invertido), sin luz y plumilla (rayado a tinta).
@@ -147,8 +160,8 @@ MiJuego/
 ```
 
 **Archivo → Exportar juego** crea `export/<nombre>/` con el ejecutable, las
-escenas, los assets y la biblioteca de scripts; ese ejecutable abre el juego
-sin argumentos.
+escenas, los assets, la biblioteca de scripts y los archivos de la biblioteca
+integrada que usan sus escenas; ese ejecutable abre el juego sin argumentos.
 
 ## Pruebas
 

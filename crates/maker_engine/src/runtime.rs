@@ -4,6 +4,7 @@
 //! `start` pendientes → N × (`fixed_update` → física) → `update` →
 //! destrucciones diferidas → propagación de transforms.
 
+use crate::animation::Animation;
 use crate::components::*;
 use crate::input::Input;
 use crate::log;
@@ -31,6 +32,9 @@ pub struct Runtime {
     pub frame: u64,
     accumulator: f32,
     pub paused: bool,
+    pub animation: Animation,
+    /// Raíz del proyecto (para resolver rutas de modelos y clips).
+    pub project_root: Option<std::path::PathBuf>,
 }
 
 /// Estado que ven las funciones del host durante una llamada a un script.
@@ -47,7 +51,7 @@ impl Runtime {
     pub fn start(scene: &mut Scene, lib: Option<Arc<ScriptLib>>) -> Runtime {
         scene.update_transforms();
         let physics = Physics::build(scene);
-        let mut rt = Runtime { physics, lib, instances: Vec::new(), time: 0.0, frame: 0, accumulator: 0.0, paused: false };
+        let mut rt = Runtime { physics, lib, instances: Vec::new(), time: 0.0, frame: 0, accumulator: 0.0, paused: false, animation: Animation::default(), project_root: None };
         let mut slots: Vec<(EntityId, Scripts)> = {
             let mut q = scene.world.query::<(&EntityId, &Scripts)>();
             q.iter().map(|(id, s)| (*id, s.clone())).collect()
@@ -175,6 +179,8 @@ impl Runtime {
             }
         }
         ctx.scene.update_transforms();
+        // Animación después de los scripts (que pueden cambiar de clip).
+        self.animation.update(ctx.scene, self.project_root.as_deref(), dt, |_| true);
         self.time += dt;
         self.frame += 1;
     }
@@ -239,6 +245,8 @@ fn host_api(ctx: &mut HostCtx) -> HostApi {
         set_color: h_set_color,
         exists: h_exists,
         set_shading: h_set_shading,
+        play_animation: h_play_animation,
+        set_animation_speed: h_set_animation_speed,
     }
 }
 
@@ -387,6 +395,27 @@ unsafe extern "C" fn h_set_shading(c: *mut c_void, e: Entity, code: u32) {
     }
 }
 
+unsafe extern "C" fn h_play_animation(c: *mut c_void, e: Entity, p: *const u8, n: usize, fade: f32) -> bool {
+    let c = unsafe { cx(c) };
+    let name = String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(p, n) }).into_owned();
+    match c.scene.get_mut::<Animator>(id(e)) {
+        Some(mut a) => {
+            a.play(&name, fade.max(0.0));
+            true
+        }
+        None => {
+            log::warn("script", format!("play_animation: la entidad {} no tiene Animator", e.0));
+            false
+        }
+    }
+}
+unsafe extern "C" fn h_set_animation_speed(c: *mut c_void, e: Entity, speed: f32) {
+    let c = unsafe { cx(c) };
+    if let Some(mut a) = c.scene.get_mut::<Animator>(id(e)) {
+        a.speed = speed;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -438,7 +467,35 @@ mod tests {
         }
     }
 
-    maker_api::script_library!(TEST_LIB; Spinner, Spawner, Panicker, Toonify);
+    #[derive(Default)]
+    struct Dancer;
+    impl Script for Dancer {
+        fn start(&mut self, ctx: &mut Ctx) {
+            let me = ctx.entity;
+            assert!(ctx.play_animation(me, "Dance_Loop", 0.25));
+            ctx.set_animation_speed(me, 1.5);
+            let cam = ctx.find("Cámara principal").unwrap();
+            assert!(!ctx.play_animation(cam, "Dance_Loop", 0.0), "sin Animator");
+        }
+    }
+
+    maker_api::script_library!(TEST_LIB; Spinner, Spawner, Panicker, Toonify, Dancer);
+
+    #[test]
+    fn scripts_drive_animator_through_abi() {
+        let lib = Arc::new(ScriptLib::from_static(&TEST_LIB).unwrap());
+        let mut s = Scene::starter();
+        let cube = s.find_by_name("Cubo").unwrap();
+        let mut a = Animator::new("", "Idle_Loop");
+        a.state.current = "Idle_Loop".into();
+        s.insert(cube, a);
+        s.insert(cube, Scripts(vec![ScriptSlot { name: "Dancer".into(), enabled: true, ..Default::default() }]));
+        let mut rt = Runtime::start(&mut s, Some(lib));
+        rt.tick(&mut s, &Input::default(), 1.0 / 60.0);
+        let a = s.get::<Animator>(cube).unwrap();
+        assert_eq!((a.clip.as_str(), a.speed, a.playing), ("Dance_Loop", 1.5, true));
+        assert_eq!(a.state.from.as_ref().map(|f| f.0.as_str()), Some("Idle_Loop"));
+    }
 
     #[test]
     fn scripts_can_change_shading_model() {

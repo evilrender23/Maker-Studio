@@ -3,11 +3,14 @@
 //! ECS (hecs), escena serializable, jerarquía de transforms, física (Rapier),
 //! scripting en Rust con recarga en caliente y proyectos.
 
+pub mod animation;
+pub mod biblioteca;
 pub mod components;
 pub mod input;
 pub mod log;
 pub mod math;
 pub mod mesh;
+pub mod model;
 pub mod physics;
 pub mod project;
 pub mod runtime;

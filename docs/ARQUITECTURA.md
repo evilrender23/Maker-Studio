@@ -5,7 +5,7 @@ Maker Studio es un workspace de Cargo con cinco crates:
 | Crate          | Qué es |
 |----------------|--------|
 | `maker_api`    | API de scripting: tipos C-ABI, el trait `Script`, `Ctx`, `Props` y la macro `export_scripts!`. Es lo único de lo que depende el crate de scripts de un juego. |
-| `maker_engine` | Núcleo sin gráficos: ECS, escena y su formato, jerarquía de transforms, mallas (primitivas y glTF), física, entrada, carga de scripts, bucle de juego, proyectos. Se prueba sin ventana. |
+| `maker_engine` | Núcleo sin gráficos: ECS, escena y su formato, jerarquía de transforms, mallas (primitivas y glTF), modelos con materiales, esqueletos y clips (`model.rs`), animación (`animation.rs`), biblioteca integrada (`biblioteca.rs`), física, entrada, carga de scripts, bucle de juego, proyectos. Se prueba sin ventana. |
 | `maker_render` | Renderizador de escena sobre wgpu (Vulkan, Metal, DX12 o GL según la plataforma). |
 | `maker_editor` | El editor (`maker-studio`), con egui. |
 | `maker_player` | El reproductor sin editor (`maker-player`), que es el ejecutable de un juego exportado. |
@@ -25,6 +25,8 @@ Maker Studio es un workspace de Cargo con cinco crates:
 | Recarga en caliente de código | Unreal Live Coding, Godot | Scripts en `cdylib` recargados al compilar; frontera C-ABI estable. |
 | Materiales PBR metal-rugosidad | Unreal, Unity HDRP/URP, Godot | GGX + Smith + Schlick, ambiente hemisférico, reflejo aproximado del cielo, tonemap ACES. |
 | Modelo de sombreado por material | Unreal (*shading models*), Godot (`render_mode`) | `Material::shading`: PBR, toon, sin luz o plumilla; un pipeline por modelo. |
+| Biblioteca de assets integrada | Unreal (Starter Content / Fab), Unity (Asset Store) | `assets/biblioteca` va con el motor y se referencia como `biblioteca://pack/modelo.glb`; exportar copia solo lo usado. Ver [BIBLIOTECA.md](BIBLIOTECA.md). |
+| Animación esquelética con reasignación por nombre de hueso | Unreal (IK Retargeter), Godot (`BoneMap`) | Componente `Animator`; skinning en GPU con una paleta de huesos por entidad y fotograma. |
 | Lanzar el juego aparte del editor | Unreal "Standalone Game" | Archivo → Ejecutar en ventana aparte (`maker-player`). |
 | Exportar el juego | los tres | Archivo → Exportar juego: reproductor + escenas + assets + biblioteca de scripts en `export/<nombre>/`. |
 | Project Hub | Unity Hub, gestor de proyectos de Godot | Pantalla inicial con recientes, nuevo (demo o básico) y abrir. |
@@ -39,6 +41,13 @@ Maker Studio es un workspace de Cargo con cinco crates:
   los objetos (una escritura por fotograma), mallas en GPU cacheadas por origen,
   *frustum culling* por AABB, MSAA 4×, mapa de sombras de 2048² ajustado a
   texel para que no parpadee.
+- Modelos con varias submallas en un solo búfer de vértices; los dibujos se
+  ordenan por pipeline, material y modelo para no repetir *binds*. Texturas
+  cacheadas por ruta y compartidas entre modelos del mismo pack.
+- Skinning en GPU: la paleta de huesos de cada entidad con piel se calcula en
+  CPU y se sube una vez por fotograma a un único búfer de almacenamiento; la
+  usan el pase de color, el de sombras y el contorno. Las listas de dibujo y
+  los búferes de subida se reutilizan entre fotogramas.
 - Física Rapier (SIMD, islas, *sleeping*); solo existe durante Play.
 - Scripts nativos sin intérprete ni GC.
 - El historial de deshacer guarda la escena completa solo al terminar una
@@ -46,10 +55,18 @@ Maker Studio es un workspace de Cargo con cinco crates:
 
 ## Renderizador
 
-Pasadas por fotograma: sombras (profundidad desde el sol) → cielo (triángulo a
-pantalla completa) → opacos agrupados por pipeline (PBR y sin luz → toon →
-plumilla) → contornos de casco invertido de los materiales toon y plumilla →
-contorno de selección → rejilla infinita del editor (con desvanecimiento).
+Pasadas por fotograma: sombras (profundidad desde el sol, con recorte alfa y
+piel) → cielo (triángulo a pantalla completa) → opacos y recortes agrupados por
+pipeline (PBR y sin luz → toon → plumilla) → contornos de casco invertido de
+los materiales toon y plumilla → transparentes de atrás adelante → contorno de
+selección → rejilla infinita del editor (con desvanecimiento).
+
+Cada submalla glTF tiene su material: textura de color base (sRGB, mipmaps,
+trilineal + anisotropía ×16), factor, modo alfa (opaco, recorte con
+`alphaCutoff`, mezcla) y doble cara. El color final es textura × factor ×
+color de vértice × tinte del `MeshRenderer`, en todos los modelos de
+sombreado. Las variantes (recorte, mezcla, piel, doble cara) son constantes
+`override` de WGSL y pipelines creados bajo demanda.
 Todo se dibuja en una textura fuera de pantalla `Rgba8UnormSrgb` (MSAA
 resuelto) que el editor registra en egui y el reproductor pinta a pantalla
 completa.
@@ -89,4 +106,7 @@ jerarquía, duplicar, reordenar), mallas (normales hacia fuera), rayos y
 proyección, materiales (escenas antiguas, `unlit`, ida y vuelta), normales suavizadas, entrada, física (caída y reposo, raycast), scripts (props,
 spawn, destroy, pánico atrapado, `set_shading`), proyectos, cámara del editor, gizmos
 (arrastre, ajuste, anillo de rotación), resaltado de Rust, deshacer/rehacer,
-render sin ventana y recarga en caliente de punta a punta.
+render sin ventana, recarga en caliente de punta a punta, catálogo de la
+biblioteca, orden de búsqueda y rutas `biblioteca://`, muestreo de animación
+(lineal, escalón, slerp), paleta de huesos, reasignación por nombre de hueso y
+mipmaps con cobertura alfa.

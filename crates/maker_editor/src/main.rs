@@ -1,7 +1,9 @@
 //! Maker Studio — editor 3D. MIT © EvilRender23.
 
 mod agente;
+mod animator_ui;
 mod app;
+mod biblioteca_ui;
 mod camera;
 mod code;
 mod editor;
@@ -29,7 +31,8 @@ const USAGE: &str = "Uso: maker-studio [PROYECTO] [opciones]
   --select NOMBRE          selecciona y encuadra una entidad
   --play                   entra en Play al arrancar
   --hold TECLA             mantiene una tecla pulsada durante Play (W, A, Space…)
-  --tab content|console|script
+  --scene ESCENA           abre esa escena del proyecto (p. ej. scenes/biblioteca.mscene)
+  --tab content|library|console|script
   --gizmo move|rotate|scale
   --size ANCHOxALTO        tamaño de ventana
   --export                 exporta el juego a PROYECTO/export/ y sale
@@ -101,6 +104,7 @@ fn main() -> eframe::Result<()> {
             "--screenshot" => auto.screenshot = args.next().map(PathBuf::from),
             "--frames" => auto.frames = args.next().and_then(|v| v.parse().ok()).unwrap_or(30),
             "--select" => auto.select = args.next(),
+            "--scene" => auto.scene = args.next(),
             "--play" => auto.play = true,
             "--hold" => auto.hold.extend(args.next().as_deref().and_then(parse_key)),
             "--open-script" => auto.open_script = true,
@@ -119,6 +123,7 @@ fn main() -> eframe::Result<()> {
                 auto.tab = match args.next().as_deref() {
                     Some("console") => Some(editor::BottomTab::Console),
                     Some("script") => Some(editor::BottomTab::Script),
+                    Some("library") | Some("biblioteca") => Some(editor::BottomTab::Library),
                     _ => Some(editor::BottomTab::Content),
                 }
             }

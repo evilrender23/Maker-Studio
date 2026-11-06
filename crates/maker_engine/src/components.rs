@@ -437,6 +437,83 @@ impl Collider {
     }
 }
 
+/// Reproduce clips de animación esquelética sobre la malla con piel de la
+/// entidad y de sus hijos sin Animator propio (personaje + ropa + pelo).
+/// Los clips pueden venir de otro archivo con el mismo esqueleto (p. ej. la
+/// Universal Animation Library): los huesos se emparejan por nombre.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Animator {
+    /// Archivo con los clips (`biblioteca://…` o ruta del proyecto). Vacío =
+    /// los clips del propio modelo.
+    pub source: String,
+    pub clip: String,
+    pub speed: f32,
+    #[serde(rename = "loop")]
+    pub looping: bool,
+    pub playing: bool,
+    /// Ignora el desplazamiento del hueso raíz (clips `_RM` en el sitio).
+    pub in_place: bool,
+    /// Estado de reproducción (no se guarda).
+    #[serde(skip)]
+    pub state: AnimatorState,
+}
+
+/// Tiempo del clip y fundido en curso.
+#[derive(Clone, Debug, Default)]
+pub struct AnimatorState {
+    pub time: f32,
+    /// Clip anterior durante un fundido: (nombre, tiempo).
+    pub from: Option<(String, f32)>,
+    pub fade: f32,
+    pub fade_left: f32,
+    /// Clip con el que se calculó `time` (para reiniciar al cambiarlo).
+    pub current: String,
+}
+
+impl PartialEq for Animator {
+    /// El estado de reproducción no cuenta (no es parte de la escena).
+    fn eq(&self, o: &Self) -> bool {
+        self.source == o.source && self.clip == o.clip && self.speed == o.speed && self.looping == o.looping && self.playing == o.playing && self.in_place == o.in_place
+    }
+}
+
+impl Default for Animator {
+    fn default() -> Self {
+        Self { source: String::new(), clip: String::new(), speed: 1.0, looping: true, playing: true, in_place: true, state: AnimatorState::default() }
+    }
+}
+
+impl Animator {
+    pub fn new(source: &str, clip: &str) -> Self {
+        Self { source: source.into(), clip: clip.into(), ..Default::default() }
+    }
+    /// Cambia de clip con un fundido de `fade` segundos.
+    pub fn play(&mut self, clip: &str, fade: f32) {
+        if self.clip != clip || !self.playing {
+            if fade > 0.0 && !self.state.current.is_empty() {
+                self.state.from = Some((self.state.current.clone(), self.state.time));
+                self.state.fade = fade;
+                self.state.fade_left = fade;
+            } else {
+                self.state.from = None;
+                self.state.fade_left = 0.0;
+            }
+            self.clip = clip.to_string();
+            self.state.current = clip.to_string();
+            self.state.time = 0.0;
+        }
+        self.playing = true;
+    }
+}
+
+/// Paleta de huesos de una malla con piel (espacio del modelo), calculada por
+/// el sistema de animación cada fotograma. No se guarda.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SkinPose {
+    pub palette: Vec<Mat4>,
+}
+
 /// Valor de una propiedad exportada por un script, guardado en la escena.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum PropVal {
@@ -527,6 +604,21 @@ mod tests {
         assert_eq!(p.shading, ShadingModel::Toon);
         assert_eq!(p.style.bands, 3);
         assert_eq!(p.style.outline_width, StyleParams::default().outline_width);
+    }
+
+    #[test]
+    fn animator_defaults_and_state_is_not_saved() {
+        let a: Animator = serde_json::from_str(r#"{"clip":"Walk_Loop"}"#).unwrap();
+        assert_eq!((a.speed, a.looping, a.playing, a.in_place), (1.0, true, true, true));
+        let mut b = a.clone();
+        b.state.time = 3.0;
+        assert_eq!(a, b, "el tiempo de reproducción no cambia la escena");
+        let json = serde_json::to_string(&b).unwrap();
+        assert!(json.contains("\"loop\":true") && !json.contains("time"));
+        b.state.current = "Idle_Loop".into();
+        b.play("Run", 0.3);
+        assert_eq!(b.state.from.as_ref().map(|f| f.0.as_str()), Some("Idle_Loop"));
+        assert_eq!((b.state.time, b.state.fade_left), (0.0, 0.3));
     }
 
     #[test]

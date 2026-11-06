@@ -11,6 +11,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
+use crate::agente::Agente;
+use crate::agente::cli::Catalogo;
+use crate::prefs::Preferencias;
 
 /// Opciones de línea de comandos para pruebas y capturas.
 #[derive(Default, Clone)]
@@ -24,9 +27,33 @@ pub struct Auto {
     pub open_script: bool,
     pub export: bool,
     pub gizmo: Option<crate::gizmo::GizmoMode>,
+    pub prefs: bool,
+    pub agent: AutoAgente,
     pub frame: u32,
     pub shot_requested: bool,
     pub done: Arc<AtomicBool>,
+    /// Fotogramas seguidos sin turno del agente en marcha.
+    pub agent_idle: u32,
+}
+
+/// Automatización del modo agente (`--agent-*`).
+#[derive(Default, Clone)]
+pub struct AutoAgente {
+    pub prompt: Option<String>,
+    pub cli: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub perm: Option<String>,
+    pub chips: Option<String>,
+    pub continuar: bool,
+    pub compact: bool,
+    pub panel: bool,
+}
+
+impl AutoAgente {
+    fn activo(&self) -> bool {
+        self.prompt.is_some() || self.panel || self.compact
+    }
 }
 
 pub struct MakerApp {
@@ -40,6 +67,10 @@ pub struct MakerApp {
     quitting: bool,
     upd: crate::update::Actualizador,
     upd_oculta: bool,
+    prefs: Preferencias,
+    prefs_abierta: bool,
+    catalogo: Catalogo,
+    agente: Option<Agente>,
 }
 
 impl MakerApp {
@@ -59,7 +90,18 @@ impl MakerApp {
         if auto.screenshot.is_none() && !auto.export {
             upd.vigilar(&cc.egui_ctx);
         }
-        Self { rs, hub, ed, auto, last: Instant::now(), title: String::new(), close_prompt: false, quitting: false, upd, upd_oculta: false }
+        let mut prefs = Preferencias::cargar();
+        if auto.agent.activo() {
+            prefs.modo_agente = true;
+            prefs.panel_agente = true;
+        }
+        let catalogo = Catalogo::default();
+        // Con el modo agente apagado no se busca ninguna CLI.
+        if prefs.modo_agente {
+            catalogo.detectar(prefs.rutas(), Some(cc.egui_ctx.clone()));
+        }
+        let prefs_abierta = auto.prefs;
+        Self { rs, hub, ed, auto, last: Instant::now(), title: String::new(), close_prompt: false, quitting: false, upd, upd_oculta: false, prefs, prefs_abierta, catalogo, agente: None }
     }
 
     fn set_title(&mut self, ctx: &egui::Context) {
@@ -119,7 +161,10 @@ impl MakerApp {
         }
         ctx.request_repaint();
         let building = self.ed.as_ref().is_some_and(|e| e.build.is_some());
-        if a.frame >= a.frames.max(30) && !a.shot_requested && !building {
+        let agente_ocupado = self.agente.as_ref().is_some_and(|g| g.ocupado());
+        a.agent_idle = if agente_ocupado || building { 0 } else { a.agent_idle + 1 };
+        let agente_listo = !a.agent.activo() || (a.frame > 3 && a.agent_idle > 20);
+        if a.frame >= a.frames.max(30) && !a.shot_requested && !building && agente_listo {
             a.shot_requested = true;
             let path = a.screenshot.clone().unwrap();
             let done = a.done.clone();
@@ -142,7 +187,12 @@ impl MakerApp {
                     println!("Jugador en ({:.2}, {:.2}, {:.2})", g.x, g.y, g.z);
                 }
             }
-            for e in log::since(0).iter().filter(|e| e.level != log::Level::Info) {
+            if a.agent.activo()
+                && let Some(g) = &self.agente
+            {
+                crate::agente::imprimir_sesion(g);
+            }
+            for e in log::since(0).iter().filter(|e| e.level != log::Level::Info || (a.agent.activo() && (e.source == "agente" || e.source == "scripts"))) {
                 println!("[{:?}] [{}] {}", e.level, e.source, e.text);
             }
             self.quitting = true;
@@ -169,13 +219,25 @@ impl eframe::App for MakerApp {
         let mut back_to_hub = false;
         {
             let (ed, upd, oculta) = (&mut self.ed, &self.upd, &mut self.upd_oculta);
+            let (prefs, prefs_abierta) = (&mut self.prefs, &mut self.prefs_abierta);
             crate::titlebar::show(ui, ed.is_some(), |ui| {
                 if let Some(ed) = ed {
-                    back_to_hub = menu_bar(ed, ui, upd, oculta);
+                    back_to_hub = menu_bar(ed, ui, upd, oculta, prefs, prefs_abierta);
                 }
             });
         }
         self.update_bar(ui);
+        if ctx.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Comma))) {
+            self.prefs_abierta = !self.prefs_abierta;
+        }
+        let antes = self.prefs.modo_agente;
+        crate::prefs::ventana(&ctx, &mut self.prefs_abierta, &mut self.prefs, &self.catalogo);
+        if antes && !self.prefs.modo_agente
+            && let Some(g) = &mut self.agente
+        {
+            g.parar();
+        }
+        self.automation_agente(&ctx);
         let Some(ed) = &mut self.ed else {
             if let Some(p) = self.hub.ui(ui) {
                 self.ed = Some(Editor::open(p, &self.rs));
@@ -191,9 +253,33 @@ impl eframe::App for MakerApp {
         ed.tick(dt);
         shortcuts(ed, &ctx);
 
+        // Modo agente: estado por proyecto, eventos de la CLI e integración tras cada turno.
+        let modo = self.prefs.modo_agente;
+        if modo {
+            if self.agente.as_ref().is_none_or(|g| g.raiz != ed.project.root) {
+                self.agente = Some(Agente::new(&ed.project.root, &self.prefs, self.catalogo.clone(), &ctx));
+            }
+            if ctx.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::A))) {
+                self.prefs.panel_agente = !self.prefs.panel_agente;
+                self.prefs.guardar();
+            }
+        }
+        if let Some(g) = &mut self.agente {
+            g.actualizar(ed, &self.prefs);
+            if !modo && !g.ocupado() {
+                self.agente = None;
+            }
+        }
+        let mut panel_agente = modo.then_some(self.prefs.panel_agente);
         egui::Panel::top("toolbar")
             .frame(egui::Frame::new().fill(theme::CHROME).inner_margin(egui::Margin::symmetric(8, 4)).stroke(egui::Stroke::new(1.0, theme::STROKE4)))
-            .show(ui, |ui| toolbar(ed, ui));
+            .show(ui, |ui| toolbar(ed, ui, panel_agente.as_mut()));
+        if let Some(v) = panel_agente
+            && v != self.prefs.panel_agente
+        {
+            self.prefs.panel_agente = v;
+            self.prefs.guardar();
+        }
         egui::Panel::bottom("status").frame(egui::Frame::new().fill(theme::CHROME).inner_margin(egui::Margin::symmetric(10, 3))).show(ui, |ui| {
             ui.horizontal(|ui| {
                 let msg = if ed.status.is_empty() { "Listo".to_string() } else { ed.status.clone() };
@@ -207,6 +293,12 @@ impl eframe::App for MakerApp {
             });
         });
         egui::Panel::left("hierarchy").frame(theme::sidebar_frame()).resizable(true).default_size(250.0).min_size(170.0).show(ui, |ui| panels::hierarchy(ed, ui));
+        if modo
+            && self.prefs.panel_agente
+            && let Some(g) = &mut self.agente
+        {
+            egui::Panel::right("agente").frame(theme::sidebar_frame()).resizable(true).default_size(400.0).min_size(320.0).max_size(760.0).show(ui, |ui| crate::agente::panel::mostrar(g, ed, &self.prefs, ui));
+        }
         egui::Panel::right("inspector").frame(theme::sidebar_frame()).resizable(true).default_size(330.0).min_size(240.0).show(ui, |ui| panels::inspector(ed, ui));
         egui::Panel::bottom("bottom").frame(theme::sidebar_frame()).resizable(true).default_size(240.0).min_size(110.0).show(ui, |ui| panels::bottom(ed, ui));
         egui::CentralPanel::no_frame().show(ui, |ui| {
@@ -263,6 +355,10 @@ impl eframe::App for MakerApp {
         }
 
         if back_to_hub {
+            if let Some(g) = &mut self.agente {
+                g.parar();
+            }
+            self.agente = None;
             if let Some(ed) = &mut self.ed {
                 ed.stop();
                 if ed.dirty {
@@ -278,6 +374,9 @@ impl eframe::App for MakerApp {
 
     fn on_exit(&mut self) {
         self.upd.al_salir();
+        if let Some(t) = self.agente.as_ref().and_then(|g| g.turno.as_ref()) {
+            crate::agente::cli::matar_arbol(t.ej.pid);
+        }
         if let Some(ed) = &mut self.ed {
             ed.stop();
         }
@@ -289,6 +388,47 @@ impl eframe::App for MakerApp {
 }
 
 impl MakerApp {
+    /// `--agent-*`: activa el panel, prepara la sesión y envía el mensaje en el tercer fotograma.
+    fn automation_agente(&mut self, ctx: &egui::Context) {
+        let a = self.auto.agent.clone();
+        if !a.activo() || self.auto.frame != 2 {
+            return;
+        }
+        let Some(ed) = &mut self.ed else { return };
+        use crate::agente::cli::{Backend, Permisos};
+        if let Some(b) = a.cli.as_deref().and_then(Backend::desde_clave) {
+            self.prefs.cli = b;
+        }
+        let g = self.agente.get_or_insert_with(|| Agente::new(&ed.project.root, &self.prefs, self.catalogo.clone(), ctx));
+        if !a.continuar {
+            g.nueva_sesion(&self.prefs);
+        }
+        if let Some(b) = a.cli.as_deref().and_then(Backend::desde_clave) {
+            g.cambiar_backend(b, &self.prefs);
+        }
+        let s = g.sesion_mut();
+        if let Some(m) = &a.model {
+            s.modelo = m.clone();
+        }
+        if let Some(e) = &a.effort {
+            s.esfuerzo = e.clone();
+        }
+        if let Some(p) = a.perm.as_deref().and_then(Permisos::desde_clave) {
+            s.permisos = p;
+        }
+        if let Some(c) = &a.chips {
+            g.chips = c.split(',').filter_map(|x| crate::agente::contexto::Chip::desde_clave(x.trim())).collect();
+        }
+        if let Some(p) = &a.prompt {
+            if a.compact {
+                g.compactar_al_terminar();
+            }
+            g.enviar(ed, &self.prefs, p);
+        } else if a.compact {
+            g.compactar(ed, &self.prefs);
+        }
+    }
+
     /// Barra fina bajo el menú mientras se busca, compila o está lista una actualización.
     fn update_bar(&mut self, ui: &mut Ui) {
         use crate::update::Estado;
@@ -401,7 +541,7 @@ fn shortcuts(ed: &mut Editor, ctx: &egui::Context) {
     });
 }
 
-fn menu_bar(ed: &mut Editor, ui: &mut Ui, upd: &crate::update::Actualizador, upd_oculta: &mut bool) -> bool {
+fn menu_bar(ed: &mut Editor, ui: &mut Ui, upd: &crate::update::Actualizador, upd_oculta: &mut bool, prefs: &mut Preferencias, prefs_abierta: &mut bool) -> bool {
     let mut hub = false;
     egui::MenuBar::new().ui(ui, |ui| {
         ui.menu_button("Archivo", |ui| {
@@ -434,6 +574,10 @@ fn menu_bar(ed: &mut Editor, ui: &mut Ui, upd: &crate::update::Actualizador, upd
                     Ok(p) => ed.status = format!("Exportado en {}", p.display()),
                     Err(e) => log::error("editor", e),
                 }
+            }
+            ui.separator();
+            if ui.button("Preferencias…            Ctrl+,").clicked() {
+                *prefs_abierta = true;
             }
             ui.separator();
             if ui.button("Volver al Project Hub").clicked() {
@@ -480,6 +624,13 @@ fn menu_bar(ed: &mut Editor, ui: &mut Ui, upd: &crate::update::Actualizador, upd
                 ed.open_script(ed.project.scripts_dir().join("src/lib.rs"));
             }
         });
+        if prefs.modo_agente {
+            ui.menu_button("Agente", |ui| {
+                if ui.checkbox(&mut prefs.panel_agente, "Panel del agente   Ctrl+Mayús+A").changed() {
+                    prefs.guardar();
+                }
+            });
+        }
         ui.menu_button("Ayuda", |ui| {
             ui.label(RichText::new(format!("Versión {}", crate::update::descripcion_version())).color(theme::TEXT3));
             let instalada = crate::update::version_instalada().is_some();
@@ -491,10 +642,6 @@ fn menu_bar(ed: &mut Editor, ui: &mut Ui, upd: &crate::update::Actualizador, upd
                 *upd_oculta = false;
                 upd.buscar_ahora(crate::update::automatico());
                 ui.close();
-            }
-            let mut auto = crate::update::automatico();
-            if ui.add_enabled(instalada, egui::Checkbox::new(&mut auto, "Actualizar automáticamente")).changed() {
-                crate::update::cambiar_automatico(auto);
             }
             ui.separator();
             ui.label(RichText::new("Controles del viewport").strong());
@@ -519,7 +666,7 @@ fn menu_bar(ed: &mut Editor, ui: &mut Ui, upd: &crate::update::Actualizador, upd
     hub
 }
 
-fn toolbar(ed: &mut Editor, ui: &mut Ui) {
+fn toolbar(ed: &mut Editor, ui: &mut Ui, panel_agente: Option<&mut bool>) {
     ui.horizontal(|ui| {
         ui.label(RichText::new(format!("{} / {}", ed.project.name(), ed.scene_name())).color(theme::TEXT2));
         let center = ui.available_width() * 0.5 - 90.0;
@@ -541,6 +688,12 @@ fn toolbar(ed: &mut Editor, ui: &mut Ui) {
             ed.step_frame();
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if let Some(v) = panel_agente {
+                if ui.add(egui::Button::selectable(*v, "✦ Agente")).on_hover_text("Ctrl+Mayús+A").clicked() {
+                    *v = !*v;
+                }
+                ui.separator();
+            }
             let building = ed.build.is_some();
             if ui.add_enabled(!building, egui::Button::new(if building { "Compilando…" } else { "Compilar scripts (F7)" })).clicked() {
                 ed.build_scripts();

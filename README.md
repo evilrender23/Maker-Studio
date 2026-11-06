@@ -41,6 +41,10 @@ scripts de cada juego.
   que el editor compila (F7) y recarga en caliente; propiedades editables desde
   el Inspector; los pánicos se atrapan y salen en la consola. Ver
   [docs/SCRIPTING.md](docs/SCRIPTING.md).
+- **Modo agente** (opcional, apagado por defecto): un panel para trabajar sobre
+  el proyecto con Claude Code, Codex o Antigravity, con historial de sesiones,
+  contexto del editor y recarga de escena y scripts tras cada turno. Ver
+  [docs/AGENTE.md](docs/AGENTE.md).
 - **Tema claro** de Hermes Agent Desktop (colores, radios y paleta de código
   extraídos de su CSS; tabla en `crates/maker_editor/src/theme.rs`).
 
@@ -86,8 +90,8 @@ ofrece **Reiniciar ahora**. Si cierras el editor sin reiniciar, la versión
 nueva se aplica igualmente y es la que abre la próxima vez.
 
 - **Ayuda → Buscar actualizaciones** comprueba en el momento.
-- **Ayuda → Actualizar automáticamente** activa o desactiva la búsqueda
-  periódica.
+- **Archivo → Preferencias → Actualizar automáticamente** activa o desactiva
+  la búsqueda periódica.
 - Desde la terminal: `maker-studio --actualizar` y `maker-studio --version`.
 - Volver a ejecutar el comando de instalación también actualiza.
 

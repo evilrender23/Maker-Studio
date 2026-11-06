@@ -224,12 +224,7 @@ fn leer_desde(ruta: &Path, leidos: &mut u64) -> String {
 // ------------------------------------------------------------------ ajustes
 
 fn ajustes() -> Option<PathBuf> {
-    let base = std::env::var_os("MAKER_STUDIO_CONFIG")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(|p| PathBuf::from(p).join("maker-studio")))
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config/maker-studio")))
-        .or_else(|| std::env::var_os("APPDATA").map(|h| PathBuf::from(h).join("maker-studio")))?;
-    Some(base.join("actualizar.txt"))
+    Some(crate::prefs::carpeta_config()?.join("actualizar.txt"))
 }
 
 /// La actualización automática está activada salvo que el usuario la apague.

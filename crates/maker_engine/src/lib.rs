@@ -9,6 +9,7 @@ pub mod components;
 pub mod convexo;
 pub mod cursor;
 pub mod escenas;
+pub mod estilo_visual;
 pub mod input;
 pub mod log;
 pub mod math;

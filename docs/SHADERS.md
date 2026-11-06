@@ -67,6 +67,46 @@ alfa y emisión. **Ninguno** devuelve a cada material su propio modelo.
 - No cuesta nada: el renderizador sustituye el material al rellenar el
   uniforme de cada objeto, así que la agrupación por pipeline es la misma.
 
+## Estilo visual
+
+La forma rápida de cambiar el aspecto de toda la escena: botón **Estilo** de la
+barra del viewport, o **Estilo visual** arriba del Entorno en el Inspector. Cada
+tarjeta muestra la escena actual, vista desde la cámara del editor, con ese
+estilo; las miniaturas se rehacen solas (una por fotograma) cuando la escena o
+la cámara llevan un momento quietas. Un clic aplica el estilo como un solo
+paso de deshacer; la tarjeta del estilo aplicado queda resaltada.
+
+Un estilo es el **sombreado global** más la **pila de posprocesado**, con el
+mismo formato JSON que `environment.global_shading` y `environment.post` de
+la escena. Aplicarlo sustituye esas dos partes y no toca el resto del entorno
+(cielo, niebla, exposición).
+
+| Estilo | Qué hace |
+|--------|----------|
+| **Ninguno** | Cada material con su modelo, sin efectos. |
+| **Realista** | AgX, bloom suave, color, enfoque, viñeta, FXAA. |
+| **Toon** | Toon de dos bandas con luz de borde y contorno (tipo *Breath of the Wild*), bloom. |
+| **Anime** | Cel de dos bandas con contorno grueso y contorno en pantalla, color saturado. |
+| **Cómic** | Plumilla con contorno de tinta, contraste y grano. |
+| **Retro PS1** | Píxeles grandes, 16 niveles por canal con tramado Bayer. |
+| **Cinemático** | Profundidad de campo, ACES, gradación cálida, aberración, viñeta, grano. |
+| **Noir** | Blanco y negro contrastado, viñeta fuerte y grano. |
+| **Pastel** | Toon suave sin contorno, AgX luminoso, colores lavados. |
+| **CRT** | Solo si el proyecto tiene `shaders/post/crt.wgsl` (el de la demo). |
+
+Debajo de la galería:
+
+- **Intensidad** (0–150 %) escala la fuerza del estilo: la intensidad de cada
+  efecto, la exposición del tonemap y la luz de borde, el brillo y el contorno
+  del sombreado. Con un estilo aplicado, moverla lo reaplica.
+- **Solo sombreado** / **Solo posprocesado** aplican solo esa parte y
+  conservan la otra tal como está.
+- **Personalizar…** abre el Entorno en el Inspector para retocarlo todo.
+- **Guardar como estilo…** guarda el sombreado global y la pila actuales en
+  `estilos/<nombre>.mvisual`. Los estilos propios salen como tarjetas al
+  final (clic derecho: renombrar o eliminar) y en **Contenido** con su icono;
+  doble clic en Contenido también lo aplica.
+
 ## Posprocesado
 
 **Inspector → Entorno de la escena → Posprocesado**: una pila ordenada de
@@ -86,7 +126,7 @@ modelos no se posprocesan. La interfaz del juego se dibuja encima y tampoco.
 | **Viñeta** | radio, suavidad, color | 0..1 |
 | **Aberración cromática** | desplazamiento en px (a 1080 p) | 0..1 |
 | **Grano** | tamaño en px | 0..1 |
-| **Retro** | tamaño de píxel, niveles por canal (0 = sin posterizar) | 0..1 |
+| **Retro** | tamaño de píxel, niveles por canal (0 = sin posterizar), tramado Bayer 4×4 | 0..1 |
 | **Enfoque** | radio | 0..1 |
 | **FXAA** | — | 0..1 |
 | **Contorno en pantalla** | color, grosor, umbral de distancia y de normal | 0..1 |
@@ -231,3 +271,7 @@ En el Inspector (**Malla → Normal map**):
   tarda un poco (en otro hilo; mientras, la malla se ve sin relieve).
 - La rejilla y el contorno de selección del editor pasan por la cadena de
   posprocesado (el tonemap y los efectos los alteran un poco).
+- Las miniaturas del Estilo visual usan un segundo renderizador: la primera
+  vez carga otra copia de los modelos de la escena en la GPU (se libera al
+  cerrar la galería). La intensidad no cambia el operador del tonemap (AgX
+  sigue siendo AgX al 0 %).

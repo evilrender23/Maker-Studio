@@ -2,7 +2,7 @@
 //! izquierda, filtro por tipo, búsqueda y una cuadrícula con miniaturas: los modelos se
 //! renderizan con el propio motor (una por fotograma, en caché fuera del proyecto) y el resto
 //! lleva su icono pixel. Arrastrar un modelo al viewport o a la jerarquía lo añade; doble clic
-//! abre escenas y scripts, entra en carpetas o añade modelos.
+//! abre escenas y scripts, entra en carpetas, añade modelos o aplica estilos visuales.
 
 use crate::editor::Editor;
 use crate::icons::{self, Icon};
@@ -26,11 +26,12 @@ pub enum Tipo {
     Tema,
     Plantilla,
     Fuente,
+    EstiloVisual,
     Otro,
 }
 
 impl Tipo {
-    const FILTROS: [Tipo; 8] = [Tipo::Escena, Tipo::Modelo, Tipo::Script, Tipo::Estilo, Tipo::Tema, Tipo::Plantilla, Tipo::Fuente, Tipo::Otro];
+    const FILTROS: [Tipo; 9] = [Tipo::Escena, Tipo::Modelo, Tipo::Script, Tipo::Estilo, Tipo::Tema, Tipo::Plantilla, Tipo::Fuente, Tipo::EstiloVisual, Tipo::Otro];
 
     pub fn de(p: &Path) -> Tipo {
         if p.is_dir() {
@@ -44,6 +45,7 @@ impl Tipo {
             Some("mtema") => Tipo::Tema,
             Some("mui") => Tipo::Plantilla,
             Some("ttf" | "otf") => Tipo::Fuente,
+            Some(maker_engine::estilo_visual::EXT) => Tipo::EstiloVisual,
             _ => Tipo::Otro,
         }
     }
@@ -58,6 +60,7 @@ impl Tipo {
             Tipo::Tema => "Temas",
             Tipo::Plantilla => "Plantillas de interfaz",
             Tipo::Fuente => "Fuentes",
+            Tipo::EstiloVisual => "Estilos visuales",
             Tipo::Otro => "Otros",
         }
     }
@@ -72,6 +75,7 @@ impl Tipo {
             Tipo::Tema => (Icon::Tema, theme::PURPLE),
             Tipo::Plantilla => (Icon::Plantilla, theme::GREEN),
             Tipo::Fuente => (Icon::Fuente, theme::CYAN),
+            Tipo::EstiloVisual => (Icon::EstiloVisual, theme::WARM),
             Tipo::Otro => (Icon::Archivo, theme::TEXT3),
         }
     }
@@ -221,6 +225,7 @@ enum Accion {
     AbrirEstilo(String),
     AbrirTema(String),
     Instanciar(String),
+    AplicarEstiloVisual(PathBuf),
 }
 
 pub fn show(ed: &mut Editor, ui: &mut Ui) {
@@ -323,6 +328,7 @@ pub fn show(ed: &mut Editor, ui: &mut Ui) {
                             Tipo::Estilo => Accion::AbrirEstilo(rel.clone()),
                             Tipo::Tema => Accion::AbrirTema(p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()),
                             Tipo::Plantilla => Accion::Instanciar(rel.clone()),
+                            Tipo::EstiloVisual => Accion::AplicarEstiloVisual(p.clone()),
                             Tipo::Script | Tipo::Fuente | Tipo::Otro => Accion::AbrirScript(p.clone()),
                         });
                     }
@@ -366,6 +372,9 @@ pub fn show(ed: &mut Editor, ui: &mut Ui) {
         }
         Some(Accion::Instanciar(r)) => {
             ed.instanciar_plantilla(&r, None);
+        }
+        Some(Accion::AplicarEstiloVisual(p)) => {
+            crate::estilo_visual_ui::aplicar_archivo(ed, &p);
         }
         None => {}
     }

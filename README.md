@@ -65,6 +65,9 @@ scripts de cada juego.
   retro, enfoque, FXAA, contorno en pantalla, niebla de altura, profundidad de
   campo) y efectos WGSL propios en `shaders/post/` con parámetros en el
   Inspector y recarga en caliente. Sin efectos no cuesta ningún pase.
+- **Estilo visual**: galería de estilos (realista, toon, anime, cómic, retro
+  PS1, cinemático, noir, pastel) con miniaturas en vivo de tu escena, un clic
+  para aplicar, intensidad y estilos propios en `estilos/*.mvisual`.
 - **Interfaz de juego**: lienzos con escala por resolución de referencia,
   anclas y pivote como `RectTransform`, cajas y rejillas como los contenedores
   de Godot, paneles, imágenes con 9-slice, texto con fuentes TTF/OTF del

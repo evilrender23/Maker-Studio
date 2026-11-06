@@ -1,0 +1,40 @@
+{
+  "global_shading": {
+    "model": null
+  },
+  "post": [
+    {
+      "enabled": true,
+      "intensity": 1.0,
+      "kind": {
+        "Tonemap": {
+          "op": "Aces",
+          "exposure_ev": 0.0
+        }
+      }
+    },
+    {
+      "enabled": true,
+      "intensity": 1.0,
+      "kind": {
+        "ColorGrading": {
+          "contrast": 1.05,
+          "saturation": 1.1,
+          "temperature": 0.0,
+          "tint": 0.0
+        }
+      }
+    },
+    {
+      "enabled": true,
+      "intensity": 1.0,
+      "kind": {
+        "Retro": {
+          "pixel_size": 4.0,
+          "levels": 16,
+          "dither": 1.0
+        }
+      }
+    }
+  ]
+}

@@ -166,18 +166,26 @@ fn fs_grano(in: PostIn) -> @location(0) vec4<f32> {
     return vec4<f32>(a_lineal(s), 1.0);
 }
 
-// p0: tamaño del píxel, niveles (0 = sin posterizar).
+// Umbral Bayer 4×4 en -0.5..0.5.
+fn bayer4(p: vec2<u32>) -> f32 {
+    let m = array<f32, 16>(0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
+    return (m[(p.y % 4u) * 4u + (p.x % 4u)] + 0.5) / 16.0 - 0.5;
+}
+
+// p0: tamaño del píxel, niveles (0 = sin posterizar), tramado.
 @fragment
 fn fs_retro(in: PostIn) -> @location(0) vec4<f32> {
     let src = muestra(in.uv).rgb;
     let tam = max(post.p[0].x, 1.0);
-    let centro = (floor(in.pos.xy / tam) + 0.5) * tam * post.resolucion.zw;
+    let celda = floor(in.pos.xy / tam);
+    let centro = (celda + 0.5) * tam * post.resolucion.zw;
     let tx = clamp(vec2<i32>(centro * post.texel.zw), vec2<i32>(0), vec2<i32>(post.texel.zw) - 1);
     var c = textureLoad(entrada, tx, 0).rgb;
     let niveles = post.p[0].y;
     if (niveles >= 2.0) {
         let n = niveles - 1.0;
-        c = a_lineal(floor(a_srgb(c) * n + 0.5) / n);
+        let t = bayer4(vec2<u32>(celda)) * post.p[0].z;
+        c = a_lineal(clamp(floor(a_srgb(c) * n + 0.5 + t) / n, vec3<f32>(0.0), vec3<f32>(1.0)));
     }
     return vec4<f32>(mix(src, c, post.intensidad), 1.0);
 }

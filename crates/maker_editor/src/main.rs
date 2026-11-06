@@ -9,6 +9,7 @@ mod code;
 mod contenido_ui;
 mod editor;
 mod escenas_ui;
+mod estilo_visual_ui;
 mod estilos_ui;
 mod gizmo;
 mod hub;

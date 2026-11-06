@@ -49,6 +49,7 @@ fn toolbar(ed: &mut Editor, ui: &mut egui::Ui) {
         ui.toggle_value(&mut ed.show_grid, "Rejilla");
         ui.toggle_value(&mut ed.shadows, "Sombras");
         ui.toggle_value(&mut ed.post_fx, "Posprocesado").on_hover_text("Efectos de posprocesado de la escena");
+        crate::estilo_visual_ui::boton(ed, ui, "Estilo");
         ui.separator();
         ui.toggle_value(&mut ed.mostrar_ui, "Interfaz").on_hover_text("Dibujar la interfaz sobre la vista");
         if !ed.is_playing() {

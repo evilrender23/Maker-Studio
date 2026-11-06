@@ -260,6 +260,9 @@ fn effect_params(ui: &mut Ui, kind: &mut PostKind, renderer: &mut SceneRenderer,
             row(ui, "Niveles", |ui| {
                 ui.add(egui::Slider::new(&mut r.levels, 0..=32)).on_hover_text("Colores por canal; 0 = sin posterizar");
             });
+            row(ui, "Tramado", |ui| {
+                ui.add(egui::Slider::new(&mut r.dither, 0.0..=1.0)).on_hover_text("Patrón Bayer 4×4 entre niveles (necesita niveles)");
+            });
         }
         PostKind::Sharpen(s) => row(ui, "Radio", |ui| {
             ui.add(egui::Slider::new(&mut s.radius, 0.5..=3.0).suffix(" px"));

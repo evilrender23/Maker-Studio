@@ -1,0 +1,58 @@
+{
+  "global_shading": {
+    "model": null
+  },
+  "post": [
+    {
+      "enabled": true,
+      "intensity": 1.0,
+      "kind": {
+        "Tonemap": {
+          "op": "Aces",
+          "exposure_ev": -0.1
+        }
+      }
+    },
+    {
+      "enabled": true,
+      "intensity": 1.0,
+      "kind": {
+        "ColorGrading": {
+          "contrast": 1.45,
+          "saturation": 0.0,
+          "temperature": 0.0,
+          "tint": 0.0,
+          "gamma": [
+            1.1,
+            1.1,
+            1.1
+          ]
+        }
+      }
+    },
+    {
+      "enabled": true,
+      "intensity": 0.9,
+      "kind": {
+        "Vignette": {
+          "radius": 0.65,
+          "softness": 0.4,
+          "color": [
+            0,
+            0,
+            0
+          ]
+        }
+      }
+    },
+    {
+      "enabled": true,
+      "intensity": 0.5,
+      "kind": {
+        "FilmGrain": {
+          "size": 1.5
+        }
+      }
+    }
+  ]
+}

@@ -53,6 +53,7 @@ pub enum Icon {
     Fuente,
     /// Escena de arranque (primera del orden de escenas) y Play desde ella.
     Inicio,
+    EstiloVisual,
 }
 
 impl Icon {
@@ -99,6 +100,7 @@ impl Icon {
             Icon::Plantilla => &px::PLANTILLA,
             Icon::Fuente => &px::FUENTE,
             Icon::Inicio => &px::INICIO,
+            Icon::EstiloVisual => &px::ESTILO_VISUAL,
         }
     }
 }

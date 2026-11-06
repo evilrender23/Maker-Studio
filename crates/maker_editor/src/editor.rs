@@ -41,6 +41,8 @@ pub struct Undo {
     undo: Vec<(String, Instantanea)>,
     redo: Vec<(String, Instantanea)>,
     pub committed: Option<Instantanea>,
+    /// Sube con cada cambio de lo confirmado (confirmar, deshacer, rehacer, abrir).
+    pub version: u64,
 }
 
 impl Undo {
@@ -49,6 +51,7 @@ impl Undo {
         self.undo.clear();
         self.redo.clear();
         self.committed = Some(Instantanea { escena: scene.to_file(), ui });
+        self.version += 1;
     }
     /// Si la escena o los documentos de interfaz cambiaron respecto a lo último
     /// confirmado, apila el estado anterior.
@@ -63,6 +66,7 @@ impl Undo {
                 }
                 self.redo.clear();
                 self.committed = Some(now);
+                self.version += 1;
                 true
             }
             None => {
@@ -73,6 +77,7 @@ impl Undo {
     }
     pub fn undo(&mut self) -> Option<(String, Instantanea)> {
         let (label, prev) = self.undo.pop()?;
+        self.version += 1;
         if let Some(cur) = self.committed.replace(prev.clone()) {
             self.redo.push((label.clone(), cur));
         }
@@ -80,6 +85,7 @@ impl Undo {
     }
     pub fn redo(&mut self) -> Option<(String, Instantanea)> {
         let (label, next) = self.redo.pop()?;
+        self.version += 1;
         if let Some(cur) = self.committed.replace(next.clone()) {
             self.undo.push((label.clone(), cur));
         }
@@ -189,6 +195,8 @@ pub struct Editor {
     pub ui_arrastre: Option<crate::ui_editor::Arrastre>,
     /// Editor de estilos y temas.
     pub estilos: crate::estilos_ui::EstilosUi,
+    /// Galería de estilos visuales.
+    pub galeria: crate::estilo_visual_ui::Galeria,
     /// Plantillas leídas (para calcular los retoques de cada instancia).
     plantillas: BTreeMap<String, Option<PlantillaUi>>,
 }
@@ -263,6 +271,7 @@ impl Editor {
             mostrar_ui: true,
             ui_arrastre: None,
             estilos: Default::default(),
+            galeria: Default::default(),
             plantillas: BTreeMap::new(),
         };
         let docs = ed.docs_ui();

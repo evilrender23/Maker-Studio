@@ -195,11 +195,13 @@ pub struct Retro {
     pub pixel_size: f32,
     /// Niveles por canal (0 = sin posterizar).
     pub levels: u32,
+    /// Tramado Bayer 4×4 antes de posterizar (0 = sin tramado, 1 = un escalón).
+    pub dither: f32,
 }
 
 impl Default for Retro {
     fn default() -> Self {
-        Self { pixel_size: 4.0, levels: 8 }
+        Self { pixel_size: 4.0, levels: 8, dither: 0.0 }
     }
 }
 

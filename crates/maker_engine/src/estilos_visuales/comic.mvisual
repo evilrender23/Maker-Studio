@@ -1,0 +1,71 @@
+{
+  "global_shading": {
+    "model": "Hatching",
+    "style": {
+      "bands": 2,
+      "softness": 0.12,
+      "shadow_color": [
+        0.66,
+        0.68,
+        0.85
+      ],
+      "specular": 0.0,
+      "specular_size": 0.3,
+      "rim_color": [
+        1,
+        1,
+        1
+      ],
+      "rim_strength": 0.0,
+      "rim_width": 0.25,
+      "outline_width": 2.5,
+      "outline_color": [
+        0.05,
+        0.05,
+        0.06
+      ],
+      "hatch_scale": 6.0
+    },
+    "metallic": 0.0,
+    "roughness": 0.8
+  },
+  "post": [
+    {
+      "enabled": true,
+      "intensity": 1.0,
+      "kind": {
+        "EdgeOutline": {
+          "color": [
+            0.05,
+            0.05,
+            0.06
+          ],
+          "thickness": 1.5,
+          "depth_threshold": 0.06,
+          "normal_threshold": 0.7
+        }
+      }
+    },
+    {
+      "enabled": true,
+      "intensity": 1.0,
+      "kind": {
+        "ColorGrading": {
+          "contrast": 1.2,
+          "saturation": 0.85,
+          "temperature": 0.06,
+          "tint": 0.0
+        }
+      }
+    },
+    {
+      "enabled": true,
+      "intensity": 0.2,
+      "kind": {
+        "FilmGrain": {
+          "size": 2.0
+        }
+      }
+    }
+  ]
+}

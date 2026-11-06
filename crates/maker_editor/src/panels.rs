@@ -1103,7 +1103,10 @@ fn scripts(ed: &mut Editor, ui: &mut Ui, id: EntityId) {
 }
 
 fn environment(ed: &mut Editor, ui: &mut Ui) {
-    ui.label(RichText::new("Entorno de la escena").strong());
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Entorno de la escena").strong());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| crate::estilo_visual_ui::boton(ed, ui, "Estilo visual"));
+    });
     ui.add_space(4.0);
     let mut env = ed.scene.env.clone();
     egui::Grid::new("env-grid").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
@@ -1134,6 +1137,9 @@ fn environment(ed: &mut Editor, ui: &mut Ui) {
         ui.end_row();
     });
     ui.add_space(10.0);
+    if std::mem::take(&mut ed.galeria.ir_a_entorno) {
+        ui.scroll_to_cursor(Some(egui::Align::TOP));
+    }
     section_label(ui, "Sombreado global");
     crate::postproceso_ui::global_shading(ui, &mut env.global_shading);
     ui.add_space(10.0);

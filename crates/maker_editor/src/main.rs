@@ -8,6 +8,7 @@ mod camera;
 mod code;
 mod contenido_ui;
 mod editor;
+mod estilo_visual_ui;
 mod estilos_ui;
 mod gizmo;
 mod hub;

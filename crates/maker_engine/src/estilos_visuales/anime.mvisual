@@ -1,0 +1,67 @@
+{
+  "global_shading": {
+    "model": "Toon",
+    "style": {
+      "bands": 2,
+      "softness": 0.01,
+      "shadow_color": [
+        0.7,
+        0.68,
+        0.9
+      ],
+      "specular": 0.4,
+      "specular_size": 0.15,
+      "rim_color": [
+        1,
+        1,
+        1
+      ],
+      "rim_strength": 0.3,
+      "rim_width": 0.2,
+      "outline_width": 3.0,
+      "outline_color": [
+        0.08,
+        0.07,
+        0.1
+      ],
+      "hatch_scale": 7.0
+    },
+    "metallic": 0.0,
+    "roughness": 0.7
+  },
+  "post": [
+    {
+      "enabled": true,
+      "intensity": 1.0,
+      "kind": {
+        "EdgeOutline": {
+          "color": [
+            0.08,
+            0.07,
+            0.1
+          ],
+          "thickness": 1.2,
+          "depth_threshold": 0.08,
+          "normal_threshold": 0.6
+        }
+      }
+    },
+    {
+      "enabled": true,
+      "intensity": 1.0,
+      "kind": {
+        "ColorGrading": {
+          "contrast": 1.05,
+          "saturation": 1.25,
+          "temperature": 0.0,
+          "tint": 0.0
+        }
+      }
+    },
+    {
+      "enabled": true,
+      "intensity": 1.0,
+      "kind": "Fxaa"
+    }
+  ]
+}

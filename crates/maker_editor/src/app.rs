@@ -319,6 +319,7 @@ impl eframe::App for MakerApp {
             });
         });
         crate::viewport::capturar_raton(ed, &ctx);
+        crate::estilo_visual_ui::ventana(ed, &ctx);
 
         // Confirmar ediciones del inspector cuando termina la interacción.
         if ed.pending_edit.is_some() && !ctx.input(|i| i.pointer.any_down()) && !ctx.egui_wants_keyboard_input() {

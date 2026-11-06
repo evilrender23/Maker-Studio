@@ -591,7 +591,7 @@ impl PostFx {
                             passes.push(pass("fs_grano", input.clone(), Tex::White, out.clone(), u));
                         }
                         PostKind::Retro(r) => {
-                            u.p[0] = [r.pixel_size, r.levels as f32, 0.0, 0.0];
+                            u.p[0] = [r.pixel_size, r.levels as f32, r.dither.max(0.0), 0.0];
                             passes.push(pass("fs_retro", input.clone(), Tex::White, out.clone(), u));
                         }
                         PostKind::Sharpen(s) => {

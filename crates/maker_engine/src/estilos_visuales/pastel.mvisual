@@ -1,0 +1,96 @@
+{
+  "global_shading": {
+    "model": "Toon",
+    "style": {
+      "bands": 3,
+      "softness": 0.3,
+      "shadow_color": [
+        0.86,
+        0.8,
+        0.95
+      ],
+      "specular": 0.15,
+      "specular_size": 0.4,
+      "rim_color": [
+        1.0,
+        0.86,
+        0.95
+      ],
+      "rim_strength": 0.6,
+      "rim_width": 0.35,
+      "outline_width": 0.0,
+      "outline_color": [
+        0.5,
+        0.45,
+        0.6
+      ],
+      "hatch_scale": 7.0
+    },
+    "metallic": 0.0,
+    "roughness": 0.9
+  },
+  "post": [
+    {
+      "enabled": true,
+      "intensity": 1.0,
+      "kind": {
+        "Tonemap": {
+          "op": "Agx",
+          "exposure_ev": 0.35
+        }
+      }
+    },
+    {
+      "enabled": true,
+      "intensity": 0.6,
+      "kind": {
+        "Bloom": {
+          "threshold": 0.6,
+          "radius": 0.9
+        }
+      }
+    },
+    {
+      "enabled": true,
+      "intensity": 1.0,
+      "kind": {
+        "ColorGrading": {
+          "contrast": 0.85,
+          "saturation": 0.75,
+          "temperature": 0.05,
+          "tint": 0.1,
+          "lift": [
+            0.08,
+            0.06,
+            0.1
+          ],
+          "gamma": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "gain": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      }
+    },
+    {
+      "enabled": true,
+      "intensity": 0.4,
+      "kind": {
+        "Vignette": {
+          "radius": 0.9,
+          "softness": 0.6,
+          "color": [
+            1.0,
+            0.95,
+            1.0
+          ]
+        }
+      }
+    }
+  ]
+}

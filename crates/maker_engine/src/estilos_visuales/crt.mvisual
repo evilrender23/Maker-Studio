@@ -1,0 +1,69 @@
+{
+  "global_shading": {
+    "model": null
+  },
+  "post": [
+    {
+      "enabled": true,
+      "intensity": 0.5,
+      "kind": {
+        "Bloom": {
+          "threshold": 0.8,
+          "radius": 0.6
+        }
+      }
+    },
+    {
+      "enabled": true,
+      "intensity": 1.0,
+      "kind": {
+        "Tonemap": {
+          "op": "Aces",
+          "exposure_ev": 0.0
+        }
+      }
+    },
+    {
+      "enabled": true,
+      "intensity": 1.0,
+      "kind": {
+        "ColorGrading": {
+          "contrast": 1.1,
+          "saturation": 1.15,
+          "temperature": 0.0,
+          "tint": 0.0
+        }
+      }
+    },
+    {
+      "enabled": true,
+      "intensity": 1.0,
+      "kind": {
+        "Retro": {
+          "pixel_size": 2.0,
+          "levels": 0,
+          "dither": 0.0
+        }
+      }
+    },
+    {
+      "enabled": true,
+      "intensity": 0.7,
+      "kind": {
+        "ChromaticAberration": {
+          "amount": 2.0
+        }
+      }
+    },
+    {
+      "enabled": true,
+      "intensity": 1.0,
+      "kind": {
+        "Custom": {
+          "path": "shaders/post/crt.wgsl",
+          "values": {}
+        }
+      }
+    }
+  ]
+}

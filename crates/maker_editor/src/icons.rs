@@ -51,6 +51,7 @@ pub enum Icon {
     Tema,
     Plantilla,
     Fuente,
+    EstiloVisual,
 }
 
 impl Icon {
@@ -96,6 +97,7 @@ impl Icon {
             Icon::Tema => &px::TEMA,
             Icon::Plantilla => &px::PLANTILLA,
             Icon::Fuente => &px::FUENTE,
+            Icon::EstiloVisual => &px::ESTILO_VISUAL,
         }
     }
 }

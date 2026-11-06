@@ -11,8 +11,10 @@ esos zips ya descomprimidos (una carpeta por pack). Solo se usan los glTF/GLB.
 
 Por cada modelo escribe un .glb autocontenido en geometría que referencia
 texturas compartidas del pack (`<pack>/texturas/*.jpg|png`):
-  - solo se conserva el color base (sin normales, ORM, ni UV/colores extra);
-  - texturas reducidas a 2048 px como máximo (JPEG calidad 92, color sin submuestrear),
+  - se conservan el color base y el normal map (`normalTexture`, con su escala);
+    se descartan ORM/rugosidad y UV/colores extra;
+  - texturas de color reducidas a 2048 px como máximo (JPEG calidad 92, color sin
+    submuestrear); normal maps a 1024 px (JPEG calidad 92 sin submuestreo, sin alfa),
     JPEG salvo las que necesitan alfa (PNG con los bordes transparentes
     rellenados para que el filtrado no oscurezca las hojas);
   - texturas deduplicadas por contenido dentro de cada pack;
@@ -62,6 +64,8 @@ PAQUETES = [
 ]
 
 TEX_MAX = 2048
+# Los normal maps a la mitad: el relieve fino se nota poco y ocupan un tercio.
+NORMAL_MAX = 1024
 JPEG_CALIDAD = 92
 
 # ───────────────────────────── categorías ─────────────────────────────
@@ -302,9 +306,9 @@ def rellenar_transparentes(im):
     return filled
 
 
-def reducir(im, alpha):
+def reducir(im, maximo=TEX_MAX):
     w, h = im.size
-    escala = min(1.0, TEX_MAX / max(w, h))
+    escala = min(1.0, maximo / max(w, h))
     if escala < 1.0:
         im = im.resize((max(1, round(w * escala)), max(1, round(h * escala))), Image.LANCZOS)
     return im
@@ -318,18 +322,28 @@ class Texturas:
         self.por_hash = {}
         self.nombres = set()
         self.bytes = 0
+        self.normales = 0
 
-    def anadir(self, src):
+    def anadir(self, src, normal=False):
         data = open(src, "rb").read()
-        key = hashlib.md5(data).hexdigest()
+        key = hashlib.md5(data).hexdigest() + ("n" if normal else "")
         if key in self.por_hash:
             return self.por_hash[key]
         im = Image.open(io.BytesIO(data))
         im.load()
+        if normal:
+            # Datos, no color: RGB sin alfa, sin submuestreo de croma.
+            self.normales += 1
+            return self._guardar(key, src, None, reducir(im.convert("RGB"), NORMAL_MAX))
         # El alfa se conserva si la imagen lo usa de verdad (hojas, calcomanías).
         rgba = im.convert("RGBA")
         lo, _hi = rgba.getchannel("A").getextrema()
         tiene_alfa = lo < 250
+        if tiene_alfa:
+            return self._guardar(key, src, reducir(rellenar_transparentes(rgba)), None)
+        return self._guardar(key, src, None, reducir(im.convert("RGB")))
+
+    def _guardar(self, key, src, rgba, rgb):
         stem = re.sub(r"[^A-Za-z0-9_]+", "_", os.path.splitext(os.path.basename(src))[0]).strip("_")
         stem = re.sub(r"_png$", "", stem)
         nombre = stem
@@ -339,13 +353,10 @@ class Texturas:
             i += 1
         self.nombres.add(nombre)
         os.makedirs(self.dir, exist_ok=True)
-        if tiene_alfa:
-            rgba = rellenar_transparentes(rgba)
-            rgba = reducir(rgba, True)
+        if rgba is not None:
             fn = nombre + ".png"
             rgba.save(os.path.join(self.dir, fn), optimize=True)
         else:
-            rgb = reducir(im.convert("RGB"), False)
             fn = nombre + ".jpg"
             rgb.save(os.path.join(self.dir, fn), quality=JPEG_CALIDAD, optimize=True, progressive=False, subsampling="4:4:4")
         self.bytes += os.path.getsize(os.path.join(self.dir, fn))
@@ -381,7 +392,8 @@ def convertir(path, pack_dir, texturas):
         nodes.append(m)
     res["nodes"] = nodes
 
-    # Materiales: solo color base.
+    # Materiales: color base y normal map.
+    normales_perdidos = 0
     mats, images, textures = [], [], []
     img_index = {}
     uv_de_material = {}
@@ -411,6 +423,27 @@ def convertir(path, pack_dir, texturas):
                     textures.append({"sampler": 0, "source": img_index[fn]})
                 p["baseColorTexture"] = {"index": img_index[fn]}
                 uv_de_material[mi] = bct.get("texCoord", 0)
+        nt = m.get("normalTexture")
+        if nt is not None:
+            uv = nt.get("texCoord", 0)
+            if uv_de_material.get(mi, uv) != uv:
+                # Solo se conserva un juego de UV (el del color base).
+                normales_perdidos += 1
+            else:
+                src_img = j["images"][j["textures"][nt["index"]]["source"]]
+                src = buscar_imagen(src_img["uri"], gltf_dir, pack_dir) if "uri" in src_img else None
+                if src is None:
+                    print(f"    aviso: falta el normal map {src_img.get('uri')}")
+                else:
+                    fn = texturas.anadir(src, normal=True)
+                    if fn not in img_index:
+                        img_index[fn] = len(images)
+                        images.append({"uri": "texturas/" + fn})
+                        textures.append({"sampler": 0, "source": img_index[fn]})
+                    nm["normalTexture"] = {"index": img_index[fn]}
+                    if nt.get("scale", 1.0) != 1.0:
+                        nm["normalTexture"]["scale"] = nt["scale"]
+                    uv_de_material.setdefault(mi, uv)
         nm["pbrMetallicRoughness"] = p
         if alpha_mode != "OPAQUE":
             nm["alphaMode"] = alpha_mode
@@ -541,6 +574,8 @@ def convertir(path, pack_dir, texturas):
         "has_animations": bool(anims),
         "clips": [a["name"] for a in anims],
         "keys": (keys_in, keys_out),
+        "normales": any("normalTexture" in m for m in mats),
+        "normales_perdidos": normales_perdidos,
     }
 
 
@@ -622,6 +657,8 @@ def main():
                     fuentes.append((os.path.join(dp, f), rel))
             vistos = set()
             n_ok = 0
+            con_normales = 0
+            normales_perdidos = 0
             for src, rel in fuentes:
                 stem = os.path.splitext(os.path.basename(src))[0]
                 if stem in vistos:
@@ -640,6 +677,8 @@ def main():
                 with open(os.path.join(out_dir, stem + ".glb"), "wb") as fh:
                     fh.write(glb)
                 n_ok += 1
+                con_normales += info["normales"]
+                normales_perdidos += info["normales_perdidos"]
                 models_out.append({
                     "pack": pid,
                     "category": categoria(pid, rel, stem),
@@ -655,11 +694,14 @@ def main():
                 if info["keys"][0]:
                     print(f"  {stem}: claves de animación {info['keys'][0]} → {info['keys'][1]}")
             geo = sum(os.path.getsize(os.path.join(out_dir, f)) for f in os.listdir(out_dir) if f.endswith(".glb"))
-            print(f"[{pid}] {n_ok} modelos, {len(omitidos)} omitidos, geometría {geo / 1e6:.1f} MB, texturas {texturas.bytes / 1e6:.1f} MB ({len(texturas.nombres)})")
+            print(f"[{pid}] {n_ok} modelos ({con_normales} con normal map), {len(omitidos)} omitidos, geometría {geo / 1e6:.1f} MB, "
+                  f"texturas {texturas.bytes / 1e6:.1f} MB ({len(texturas.nombres)}, {texturas.normales} normal maps)")
+            if normales_perdidos:
+                print(f"    {normales_perdidos} normal maps descartados por usar otro juego de UV que el color")
             for o in omitidos:
                 print(f"    omitido {o[0]}: {o[1]}")
             packs_out.append({"id": pid, "name": nombre, "author": AUTOR, "license": LICENCIA, "source": fuente, "models": n_ok})
-            resumen.append((pid, n_ok, len(omitidos), ""))
+            resumen.append((pid, n_ok, len(omitidos), f"{con_normales} con normal map"))
         orden = [p[0] for p in PAQUETES]
         packs_out.sort(key=lambda p: orden.index(p["id"]) if p["id"] in orden else 99)
         models_out.sort(key=lambda m: (orden.index(m["pack"]) if m["pack"] in orden else 99, m["category"], m["name"]))

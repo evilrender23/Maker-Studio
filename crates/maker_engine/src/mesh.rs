@@ -1,7 +1,7 @@
 //! Mallas en CPU: primitivas procedurales e importación glTF/GLB.
 //! El renderizador las sube a GPU una sola vez y las cachea por `MeshSource`.
 
-use glam::{Mat4, Vec2, Vec3};
+use glam::{Mat4, Vec2, Vec3, Vec4};
 use std::f32::consts::{PI, TAU};
 use std::path::Path;
 
@@ -48,6 +48,10 @@ pub struct MeshData {
     pub positions: Vec<Vec3>,
     pub normals: Vec<Vec3>,
     pub uvs: Vec<Vec2>,
+    /// Tangentes (xyz) con el signo de la bitangente en `w`, convención glTF:
+    /// `B = cross(N, T) * w` apunta hacia arriba en la imagen (verde del
+    /// normal map). Vacío = sin calcular.
+    pub tangents: Vec<Vec4>,
     pub indices: Vec<u32>,
     /// Color de vértice RGBA (vacío = blanco).
     pub colors: Vec<[u8; 4]>,
@@ -111,7 +115,101 @@ impl MeshData {
         self.positions.extend(other.positions.iter().map(|p| m.transform_point3(*p)));
         self.normals.extend(other.normals.iter().map(|n| nm.transform_vector3(*n).normalize_or_zero()));
         self.uvs.extend(other.uvs.iter().copied());
+        if other.tangents.len() == other.positions.len() && self.tangents.len() + other.positions.len() == self.positions.len() {
+            // La tangente es una dirección de la superficie: va con la matriz
+            // del modelo. Un espejo (determinante negativo) invierte la bitangente.
+            let flip = if m.determinant() < 0.0 { -1.0 } else { 1.0 };
+            self.tangents.extend(other.tangents.iter().map(|t| m.transform_vector3(t.truncate()).normalize_or(Vec3::X).extend(t.w * flip)));
+        }
         self.indices.extend(other.indices.iter().map(|i| i + base));
+    }
+
+    /// Tangentes MikkTSpace (el estándar con el que hornean Blender, Substance
+    /// y xNormal), por esquina de triángulo. Donde dos triángulos piden
+    /// tangentes distintas para el mismo vértice (costuras de UV, espejos) el
+    /// vértice se duplica. Las UV se invierten en V para que la bitangente
+    /// apunte hacia arriba en la imagen, como pide glTF.
+    pub fn compute_tangents(&mut self) {
+        let n = self.positions.len();
+        if n == 0 || self.indices.len() < 3 {
+            self.tangents = vec![Vec4::new(1.0, 0.0, 0.0, 1.0); n];
+            return;
+        }
+        if self.normals.len() != n {
+            self.compute_normals();
+        }
+        if self.uvs.len() != n {
+            self.uvs.resize(n, Vec2::ZERO);
+        }
+        struct Geo<'a> {
+            m: &'a MeshData,
+            out: Vec<Option<[f32; 4]>>,
+        }
+        impl bevy_mikktspace::Geometry for Geo<'_> {
+            fn num_faces(&self) -> usize {
+                self.m.indices.len() / 3
+            }
+            fn num_vertices_of_face(&self, _face: usize) -> usize {
+                3
+            }
+            fn position(&self, face: usize, vert: usize) -> [f32; 3] {
+                self.m.positions[self.m.indices[face * 3 + vert] as usize].to_array()
+            }
+            fn normal(&self, face: usize, vert: usize) -> [f32; 3] {
+                self.m.normals[self.m.indices[face * 3 + vert] as usize].to_array()
+            }
+            fn tex_coord(&self, face: usize, vert: usize) -> [f32; 2] {
+                let uv = self.m.uvs[self.m.indices[face * 3 + vert] as usize];
+                [uv.x, 1.0 - uv.y]
+            }
+            fn set_tangent(&mut self, ts: Option<bevy_mikktspace::TangentSpace>, face: usize, vert: usize) {
+                self.out[face * 3 + vert] = ts.map(|t| t.tangent_encoded());
+            }
+        }
+        let corners = {
+            let mut g = Geo { m: self, out: vec![None; self.indices.len() / 3 * 3] };
+            let _ = bevy_mikktspace::generate_tangents(&mut g);
+            g.out
+        };
+        let fallback = |nrm: Vec3| -> Vec4 {
+            // Cualquier perpendicular a la normal (triángulos degenerados).
+            let t = if nrm.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
+            (t - nrm * nrm.dot(t)).normalize_or(Vec3::X).extend(1.0)
+        };
+        let mut tangents: Vec<Option<Vec4>> = vec![None; n];
+        let mut copies: std::collections::HashMap<(u32, [i32; 4]), u32> = std::collections::HashMap::new();
+        let same = |a: Vec4, b: Vec4| a.w == b.w && a.truncate().dot(b.truncate()) > 0.999;
+        for k in 0..corners.len() {
+            let v = self.indices[k] as usize;
+            let t = corners[k].map(Vec4::from).unwrap_or_else(|| fallback(self.normals[v]));
+            match tangents[v] {
+                None => tangents[v] = Some(t),
+                Some(have) if same(have, t) => {}
+                Some(_) => {
+                    let q = [(t.x * 1e3) as i32, (t.y * 1e3) as i32, (t.z * 1e3) as i32, t.w as i32];
+                    let new = *copies.entry((v as u32, q)).or_insert_with(|| {
+                        let i = self.positions.len() as u32;
+                        self.positions.push(self.positions[v]);
+                        self.normals.push(self.normals[v]);
+                        self.uvs.push(self.uvs[v]);
+                        if self.colors.len() == n {
+                            self.colors.push(self.colors[v]);
+                        }
+                        if self.joints.len() == n {
+                            self.joints.push(self.joints[v]);
+                            self.weights.push(self.weights[v]);
+                        }
+                        tangents.push(Some(t));
+                        i
+                    });
+                    self.indices[k] = new;
+                }
+            }
+        }
+        // Vértices que ningún triángulo usa.
+        self.tangents = tangents.iter().enumerate().map(|(i, t)| t.unwrap_or_else(|| fallback(self.normals[i]))).collect();
+        // Las columnas opcionales que se duplicaron solo si existían.
+        debug_assert!(self.colors.is_empty() || self.colors.len() == self.positions.len());
     }
 
     /// Normales planas/suaves calculadas si el archivo no las trae.
@@ -128,7 +226,7 @@ impl MeshData {
     }
 
     pub fn primitive(shape: PrimitiveShape) -> MeshData {
-        match shape {
+        let mut m = match shape {
             PrimitiveShape::Cube => cube(),
             PrimitiveShape::Sphere => uv_sphere(0.5, 48, 24),
             PrimitiveShape::Plane => plane(),
@@ -136,7 +234,9 @@ impl MeshData {
             PrimitiveShape::Cone => cylinder(0.5, 0.0, 1.0, 48),
             PrimitiveShape::Capsule => capsule(0.5, 0.5, 48, 12),
             PrimitiveShape::Torus => torus(0.375, 0.125, 48, 24),
-        }
+        };
+        m.compute_tangents();
+        m
     }
 
     /// Importa todas las mallas de un glTF/GLB, aplicando las transformaciones
@@ -358,6 +458,73 @@ mod tests {
         assert!((m.normals[0] - Vec3::Z).length() < 1e-5);
         let b = m.aabb();
         assert_eq!(b.min, Vec3::new(5.0, 0.0, 0.0));
+    }
+
+    /// Tangentes de las primitivas: T sigue a +U y B = cross(N, T)·w sube en
+    /// la imagen (−V), perpendiculares a la normal, en todos los triángulos.
+    #[test]
+    fn primitive_tangents_follow_uv_in_gltf_convention() {
+        for shape in PrimitiveShape::ALL {
+            let m = MeshData::primitive(shape);
+            assert_eq!(m.tangents.len(), m.positions.len(), "{shape:?}");
+            let (mut ok, mut total) = (0, 0);
+            for t in m.indices.chunks_exact(3) {
+                let [a, b, c] = [t[0], t[1], t[2]].map(|i| i as usize);
+                let (e1, e2) = (m.positions[b] - m.positions[a], m.positions[c] - m.positions[a]);
+                let (d1, d2) = (m.uvs[b] - m.uvs[a], m.uvs[c] - m.uvs[a]);
+                let det = d1.x * d2.y - d2.x * d1.y;
+                if det.abs() < 1e-8 || e1.cross(e2).length() < 1e-8 {
+                    continue;
+                }
+                let dpdu = (e1 * d2.y - e2 * d1.y) / det;
+                let dpdv = (e2 * d1.x - e1 * d2.x) / det;
+                for &i in &[a, b, c] {
+                    total += 1;
+                    let tg = m.tangents[i];
+                    let n = m.normals[i];
+                    let bt = n.cross(tg.truncate()) * tg.w;
+                    assert!(tg.truncate().dot(n).abs() < 1e-3, "{shape:?}: T ⟂ N");
+                    if tg.truncate().dot(dpdu) > 0.0 && bt.dot(-dpdv) > 0.0 {
+                        ok += 1;
+                    }
+                }
+            }
+            assert!(ok as f32 >= total as f32 * 0.98, "{shape:?}: {ok}/{total} esquinas bien orientadas");
+        }
+        // Plano: U = +X, la parte de arriba de la imagen (V = 0) en −Z.
+        let p = MeshData::primitive(PrimitiveShape::Plane);
+        for t in &p.tangents {
+            assert!((*t - Vec4::new(1.0, 0.0, 0.0, 1.0)).length() < 1e-4, "{t:?}");
+        }
+    }
+
+    /// Una costura de UV en espejo duplica los vértices compartidos; un
+    /// espejo en la transformación invierte el signo.
+    #[test]
+    fn mirrored_uvs_split_vertices_and_mirror_flips_sign() {
+        // Dos triángulos que comparten la arista x = 0 con las U en espejo.
+        let mut m = MeshData::default();
+        for (p, uv) in [
+            (Vec3::new(0.0, 0.0, 0.0), Vec2::new(1.0, 1.0)),
+            (Vec3::new(0.0, 1.0, 0.0), Vec2::new(1.0, 0.0)),
+            (Vec3::new(1.0, 0.0, 0.0), Vec2::new(0.0, 1.0)),
+            (Vec3::new(-1.0, 0.0, 0.0), Vec2::new(0.0, 1.0)),
+        ] {
+            m.push(p, Vec3::Z, uv);
+        }
+        m.indices = vec![0, 2, 1, 0, 1, 3];
+        m.compute_tangents();
+        assert_eq!(m.positions.len(), 6, "los dos vértices de la costura se duplican");
+        assert_eq!(m.tangents.len(), 6);
+        let signs: Vec<f32> = m.tangents.iter().map(|t| t.w).collect();
+        assert!(signs.contains(&1.0) && signs.contains(&-1.0), "{signs:?}");
+        let mut out = MeshData::default();
+        out.append(&m, Mat4::from_scale(Vec3::new(-1.0, 1.0, 1.0)));
+        assert_eq!(out.tangents.len(), out.positions.len());
+        for (a, b) in m.tangents.iter().zip(&out.tangents) {
+            assert_eq!(a.w, -b.w);
+            assert!((b.x + a.x).abs() < 1e-5);
+        }
     }
 
     /// El winding debe ser CCW visto desde fuera (normal geométrica ≈ normal).

@@ -53,6 +53,11 @@ scripts de cada juego.
   banda y contorno de casco invertido), sin luz y plumilla (rayado a tinta).
   **Sombreado global** para forzar un modelo en toda la escena, con
   excepciones por objeto. Ver [docs/SHADERS.md](docs/SHADERS.md).
+- **Normal maps**: los de glTF (`normalTexture`, tangentes MikkTSpace si el
+  modelo no las trae), una textura elegida o generados desde el color base
+  (PNG o automáticos), con intensidad y verde DirectX por material. La
+  biblioteca los trae en 644 modelos. Ver
+  [docs/SHADERS.md](docs/SHADERS.md#normal-maps).
 - **Posprocesado** por escena: pila ordenada de efectos (tonemapping ACES/AgX,
   corrección de color con LUT, bloom, viñeta, aberración cromática, grano,
   retro, enfoque, FXAA, contorno en pantalla, niebla de altura, profundidad de

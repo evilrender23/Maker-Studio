@@ -6,6 +6,8 @@
 // Todos leen el color base de la textura del material (× factor × color de
 // vértice × tinte de la entidad), con recorte alfa opcional, y tienen una
 // variante con piel (paleta de huesos en un búfer de almacenamiento).
+// Los modelos con luz (PBR, toon, plumilla) aplican el normal map del grupo 3
+// en espacio tangente (MikkTSpace, convención glTF); sin luz lo ignora.
 
 const PI: f32 = 3.14159265;
 const MAX_POINTS: u32 = 16u;
@@ -37,7 +39,7 @@ struct Globals {
 
 struct Object {
     model: mat4x4<f32>,
-    normal_m: mat4x4<f32>,
+    normal_m: mat3x3<f32>,
     base_color: vec4<f32>,
     emissive: vec4<f32>,     // rgb, fuerza
     params: vec4<f32>,       // metallic, roughness, unlit, separación de plumilla (px)
@@ -45,6 +47,7 @@ struct Object {
     rim: vec4<f32>,          // rgb lineal, fuerza
     style: vec4<f32>,        // suavidad, especular, tamaño especular, ancho del borde
     outline: vec4<f32>,      // rgb lineal, ancho (px a 1080 p)
+    nrm: vec4<f32>,          // x: intensidad del normal map, y: signo del verde (−1 = DirectX), z: signo del determinante
     skin: vec4<u32>,         // x: primer hueso en `joints`
 };
 
@@ -61,12 +64,19 @@ struct Material {
 @group(2) @binding(0) var base_tex: texture_2d<f32>;
 @group(2) @binding(1) var base_samp: sampler;
 @group(2) @binding(2) var<uniform> mat: Material;
+// Normal map (lineal, no sRGB). `nmap.params.x`: escala (glTF `normalTexture.scale`; 0 = no hay).
+struct NormalMapU {
+    params: vec4<f32>,
+};
+@group(3) @binding(0) var normal_tex: texture_2d<f32>;
+@group(3) @binding(1) var<uniform> nmap: NormalMapU;
 
 struct VIn {
     @location(0) pos: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
     @location(3) color: vec4<f32>,
+    @location(6) tangent: vec4<f32>,
 };
 
 struct SkinIn {
@@ -80,6 +90,7 @@ struct VOut {
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
     @location(3) color: vec4<f32>,
+    @location(4) tangent: vec4<f32>,
 };
 
 const IDENTITY: mat4x4<f32> = mat4x4<f32>(
@@ -104,7 +115,10 @@ fn shade_vertex(v: VIn, skin: mat4x4<f32>) -> VOut {
     var o: VOut;
     o.clip = g.view_proj * w;
     o.world = w.xyz;
-    o.normal = normalize((obj.normal_m * (skin * vec4<f32>(v.normal, 0.0))).xyz);
+    o.normal = normalize(obj.normal_m * (skin * vec4<f32>(v.normal, 0.0)).xyz);
+    // La tangente es una dirección de la superficie: va con la matriz del
+    // modelo (y la piel). Un espejo en la matriz invierte la bitangente.
+    o.tangent = vec4<f32>((obj.model * (skin * vec4<f32>(v.tangent.xyz, 0.0))).xyz, v.tangent.w * obj.nrm.z);
     o.uv = v.uv;
     o.color = v.color;
     return o;
@@ -124,6 +138,31 @@ fn vs_main_skinned(v: VIn, s: SkinIn) -> VOut {
 fn base_albedo(in: VOut) -> vec4<f32> {
     let t = textureSample(base_tex, base_samp, in.uv);
     return obj.base_color * mat.factor * t * in.color;
+}
+
+// Normal geométrica (interpolada) orientada hacia la cámara en las caras traseras.
+fn geometric_normal(in: VOut, front: bool) -> vec3<f32> {
+    let n = normalize(in.normal);
+    return select(-n, n, front);
+}
+
+// Normal de sombreado: la interpolada perturbada por el normal map. TBN con
+// Gram-Schmidt; B = cross(N, T) · w (glTF / MikkTSpace). La condición solo
+// depende de uniformes: sin divergencia, y sin normal map no se muestrea.
+fn shading_normal(in: VOut, front: bool) -> vec3<f32> {
+    var n = normalize(in.normal);
+    let k = obj.nrm.x * nmap.params.x;
+    if (k > 0.0) {
+        let s = textureSample(normal_tex, base_samp, in.uv).xyz * 2.0 - 1.0;
+        let t0 = in.tangent.xyz - n * dot(n, in.tangent.xyz);
+        let tl = length(t0);
+        if (tl > 1e-6) {
+            let t = t0 / tl;
+            let b = cross(n, t) * select(-1.0, 1.0, in.tangent.w >= 0.0);
+            n = normalize(t * (s.x * k) + b * (s.y * k * obj.nrm.y) + n * max(s.z, 1e-4));
+        }
+    }
+    return select(-n, n, front);
 }
 
 // Recorte alfa (hojas) al final del sombreado; alfa de salida solo al mezclar.
@@ -244,21 +283,19 @@ fn sky_color(dir: vec3<f32>) -> vec3<f32> {
 fn fs_main(in: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     let base = base_albedo(in);
     let albedo = base.rgb;
-    var n = normalize(in.normal);
-    if (!front) {
-        n = -n;
-    }
     var color: vec3<f32>;
     if (obj.params.z > 0.5) {
         color = albedo + obj.emissive.rgb * obj.emissive.w;
     } else {
+        let n = shading_normal(in, front);
+        let ng = geometric_normal(in, front);
         let metallic = clamp(obj.params.x, 0.0, 1.0);
         let rough = clamp(obj.params.y, 0.04, 1.0);
         let v = normalize(g.cam_pos.xyz - in.world);
         color = vec3<f32>(0.0);
         if (g.sun_dir.w > 0.5) {
             let l = -normalize(g.sun_dir.xyz);
-            color += brdf(n, v, l, albedo, metallic, rough) * g.sun_color.rgb * shadow_factor(in.world, n);
+            color += brdf(n, v, l, albedo, metallic, rough) * g.sun_color.rgb * shadow_factor(in.world, ng);
         }
         let count = min(u32(g.params.x), MAX_POINTS);
         for (var i: u32 = 0u; i < count; i += 1u) {
@@ -334,10 +371,8 @@ fn posterize(x: f32, step: f32, s: f32) -> f32 {
 fn fs_toon(in: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     let base = base_albedo(in);
     let albedo = base.rgb;
-    var n = normalize(in.normal);
-    if (!front) {
-        n = -n;
-    }
+    let n = shading_normal(in, front);
+    let ng = geometric_normal(in, front);
     let v = normalize(g.cam_pos.xyz - in.world);
     let s = clamp(obj.style.x, 0.0, 0.5) * 0.5;
     let bands = clamp(obj.shadow_tint.w, 2.0, 4.0);
@@ -349,7 +384,7 @@ fn fs_toon(in: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     if (g.sun_dir.w > 0.5) {
         let l = -normalize(g.sun_dir.xyz);
         let ndl = dot(n, l);
-        let shadow = band_step(shadow_factor(in.world, n), 0.5, s);
+        let shadow = band_step(shadow_factor(in.world, ng), 0.5, s);
         lit = toon_level(ndl, bands, s) * shadow;
         let sun = g.sun_color.rgb / PI;
         color = mix(color, albedo * (sun + fill), lit);
@@ -398,14 +433,12 @@ fn hatch_lines(p: vec2<f32>, dir: vec2<f32>, spacing: f32, width: f32) -> f32 {
 fn fs_hatch(in: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     let base = base_albedo(in);
     let albedo = base.rgb;
-    var n = normalize(in.normal);
-    if (!front) {
-        n = -n;
-    }
+    let n = shading_normal(in, front);
+    let ng = geometric_normal(in, front);
     var tone = g.ground.w * 0.3;
     if (g.sun_dir.w > 0.5) {
         let l = -normalize(g.sun_dir.xyz);
-        tone += max(dot(n, l), 0.0) * shadow_factor(in.world, n) * luma(g.sun_color.rgb / PI);
+        tone += max(dot(n, l), 0.0) * shadow_factor(in.world, ng) * luma(g.sun_color.rgb / PI);
     }
     let count = min(u32(g.params.x), MAX_POINTS);
     for (var i: u32 = 0u; i < count; i += 1u) {
@@ -456,7 +489,7 @@ fn vs_ink_skinned(v: InkIn, s: SkinIn) -> @builtin(position) vec4<f32> {
 
 fn ink_vertex(v: InkIn, skin: mat4x4<f32>) -> vec4<f32> {
     let w = obj.model * (skin * vec4<f32>(v.pos, 1.0));
-    let n = normalize((obj.normal_m * (skin * vec4<f32>(v.smooth_normal, 0.0))).xyz);
+    let n = normalize(obj.normal_m * (skin * vec4<f32>(v.smooth_normal, 0.0)).xyz);
     var clip = g.view_proj * w;
     let dir = (g.view_proj * vec4<f32>(n, 0.0)).xy * g.viewport.xy;
     let len = length(dir);
@@ -486,7 +519,7 @@ fn vs_outline_skinned(v: VIn, s: SkinIn) -> @builtin(position) vec4<f32> {
 
 fn outline_vertex(v: VIn, skin: mat4x4<f32>) -> vec4<f32> {
     let w = obj.model * (skin * vec4<f32>(v.pos, 1.0));
-    let n = normalize((obj.normal_m * (skin * vec4<f32>(v.normal, 0.0))).xyz);
+    let n = normalize(obj.normal_m * (skin * vec4<f32>(v.normal, 0.0)).xyz);
     let dist = length(g.cam_pos.xyz - w.xyz);
     return g.view_proj * vec4<f32>(w.xyz + n * dist * 0.006, 1.0);
 }

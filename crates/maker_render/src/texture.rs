@@ -107,6 +107,40 @@ pub fn build_mips(w: u32, h: u32, rgba: Vec<u8>, cutoff: Option<f32>) -> MipChai
     MipChain { levels, has_alpha }
 }
 
+/// Cadena de mips de un normal map (RGBA8 lineal, XYZ en 0..1): cada nivel
+/// promedia los vectores y los vuelve a normalizar, sin pasar por sRGB.
+pub fn build_normal_mips(w: u32, h: u32, rgba: Vec<u8>) -> MipChain {
+    let mut levels = vec![(w, h, rgba)];
+    loop {
+        let (lw, lh, src) = levels.last().unwrap();
+        let (lw, lh) = (*lw, *lh);
+        if lw == 1 && lh == 1 {
+            break;
+        }
+        let (nw, nh) = ((lw / 2).max(1), (lh / 2).max(1));
+        let mut out = vec![255u8; (nw * nh * 4) as usize];
+        for y in 0..nh {
+            for x in 0..nw {
+                let mut v = [0.0f32; 3];
+                for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                    let i = (((y * 2 + dy).min(lh - 1) * lw + (x * 2 + dx).min(lw - 1)) * 4) as usize;
+                    for c in 0..3 {
+                        v[c] += src[i + c] as f32 / 127.5 - 1.0;
+                    }
+                }
+                let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+                let v = if len > 1e-6 { v.map(|c| c / len) } else { [0.0, 0.0, 1.0] };
+                let o = ((y * nw + x) * 4) as usize;
+                for c in 0..3 {
+                    out[o + c] = ((v[c] * 0.5 + 0.5) * 255.0).round() as u8;
+                }
+            }
+        }
+        levels.push((nw, nh, out));
+    }
+    MipChain { levels, has_alpha: false }
+}
+
 /// Decodifica PNG/JPEG a RGBA8.
 pub fn decode(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     let img = image::load_from_memory(bytes).map_err(|e| e.to_string())?.to_rgba8();
@@ -136,6 +170,22 @@ mod tests {
         let last = &m.levels[2].2;
         assert!((last[0] as i32 - 188).abs() <= 1, "{last:?}");
         assert_eq!(last[3], 255);
+    }
+
+    /// Los mips de un normal map promedian vectores y los renormalizan: dos
+    /// inclinaciones opuestas dan la normal recta, no un vector corto.
+    #[test]
+    fn normal_mips_average_vectors_and_renormalize() {
+        let tilt = |x: f32| [((x * 0.5 + 0.5) * 255.0).round() as u8, 128, ((0.8f32 * 0.5 + 0.5) * 255.0).round() as u8, 255];
+        let mut px = Vec::new();
+        for _ in 0..2 {
+            px.extend_from_slice(&tilt(0.6));
+            px.extend_from_slice(&tilt(-0.6));
+        }
+        let m = build_normal_mips(2, 2, px);
+        assert_eq!(m.levels.len(), 2);
+        let top = &m.levels[1].2;
+        assert!((top[0] as i32 - 128).abs() <= 1 && top[2] >= 254, "{top:?}");
     }
 
     #[test]

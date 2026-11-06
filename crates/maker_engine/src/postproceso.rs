@@ -35,10 +35,28 @@ impl GlobalShading {
     /// con el color, la textura y la emisión del propio material.
     pub fn apply(&self, m: &Material) -> Material {
         match self.model {
-            Some(model) if !m.ignore_global => Material { shading: model, style: self.style, metallic: self.metallic, roughness: self.roughness, ..*m },
-            _ => *m,
+            Some(model) if !m.ignore_global => Material { shading: model, style: self.style, metallic: self.metallic, roughness: self.roughness, ..m.clone() },
+            _ => m.clone(),
         }
     }
+
+    /// Lo mismo que `apply` sin copiar el material (para el renderizador, en
+    /// cada fotograma): modelo, estilo, metálico y rugosidad efectivos.
+    pub fn resolve<'a>(&'a self, m: &'a Material) -> Shade<'a> {
+        match self.model {
+            Some(model) if !m.ignore_global => Shade { shading: model, style: &self.style, metallic: self.metallic, roughness: self.roughness },
+            _ => Shade { shading: m.shading, style: &m.style, metallic: m.metallic, roughness: m.roughness },
+        }
+    }
+}
+
+/// Parámetros de sombreado efectivos de un material (ver `GlobalShading::resolve`).
+#[derive(Clone, Copy, Debug)]
+pub struct Shade<'a> {
+    pub shading: ShadingModel,
+    pub style: &'a StyleParams,
+    pub metallic: f32,
+    pub roughness: f32,
 }
 
 fn yes() -> bool {

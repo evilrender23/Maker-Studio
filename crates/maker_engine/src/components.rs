@@ -238,9 +238,94 @@ impl Default for StyleParams {
     }
 }
 
+/// De dónde sale el normal map de un material.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum NormalSource {
+    /// Los del modelo (`normalTexture` de glTF); sin ellos, ninguno.
+    #[default]
+    Model,
+    /// Una textura elegida (`NormalMap::texture`) para todas las submallas.
+    Texture,
+    /// Generado desde el color base y guardado como PNG (ver `normal_gen`).
+    Generated,
+    /// Generado desde el color base al cargar, en memoria, sin archivo.
+    Auto,
+}
+
+impl NormalSource {
+    pub const ALL: [NormalSource; 4] = [NormalSource::Model, NormalSource::Texture, NormalSource::Generated, NormalSource::Auto];
+    pub fn label(self) -> &'static str {
+        match self {
+            NormalSource::Model => "Del modelo",
+            NormalSource::Texture => "Textura",
+            NormalSource::Generated => "Generado",
+            NormalSource::Auto => "Automático",
+        }
+    }
+    /// ¿Se calcula a partir del color base?
+    pub fn generates(self) -> bool {
+        matches!(self, NormalSource::Generated | NormalSource::Auto)
+    }
+}
+
+/// Parámetros para sacar un normal map del color base (altura = luminancia,
+/// gradiente de Sobel).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NormalGen {
+    /// Relieve: multiplica el gradiente de la altura.
+    pub strength: f32,
+    /// Radio del desenfoque previo en píxeles (0 = todo el detalle).
+    pub radius: f32,
+    /// Invierte la altura (lo claro se hunde).
+    pub invert: bool,
+}
+
+impl Default for NormalGen {
+    fn default() -> Self {
+        Self { strength: 2.0, radius: 1.0, invert: false }
+    }
+}
+
+impl NormalGen {
+    /// Clave estable de los parámetros (para cachés).
+    pub fn bits(&self) -> [u32; 3] {
+        [self.strength.to_bits(), self.radius.to_bits(), self.invert as u32]
+    }
+}
+
+/// Normal map de un material.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NormalMap {
+    pub source: NormalSource,
+    /// Ruta del proyecto o `biblioteca://…` (con `NormalSource::Texture`).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub texture: String,
+    /// Intensidad 0..2 (1 = como viene; 0 = sin relieve).
+    pub strength: f32,
+    /// Verde invertido: convención DirectX (Unreal, 3ds Max) en vez de la
+    /// OpenGL de glTF, Blender y Godot.
+    pub flip_green: bool,
+    /// Con `Generated` y `Auto`.
+    pub generate: NormalGen,
+}
+
+impl Default for NormalMap {
+    fn default() -> Self {
+        Self { source: NormalSource::Model, texture: String::new(), strength: 1.0, flip_green: false, generate: NormalGen::default() }
+    }
+}
+
+impl NormalMap {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// Material: color, PBR metal-rugosidad (el modelo de Unreal, Unity HDRP y
 /// Godot) y modelo de sombreado.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(from = "MaterialFile")]
 pub struct Material {
     /// Color base en sRGB (como lo ve el usuario) + alfa.
@@ -255,6 +340,9 @@ pub struct Material {
     /// Conserva su propio modelo aunque la escena tenga sombreado global.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub ignore_global: bool,
+    /// Normal map (las escenas anteriores cargan sin él).
+    #[serde(skip_serializing_if = "NormalMap::is_default")]
+    pub normal: NormalMap,
 }
 
 /// Forma en disco: acepta escenas antiguas (`unlit: true`, sin `shading`).
@@ -273,6 +361,8 @@ struct MaterialFile {
     style: StyleParams,
     #[serde(default)]
     ignore_global: bool,
+    #[serde(default)]
+    normal: NormalMap,
 }
 
 impl From<MaterialFile> for Material {
@@ -286,6 +376,7 @@ impl From<MaterialFile> for Material {
             shading: if f.unlit { ShadingModel::Unlit } else { f.shading },
             style: f.style,
             ignore_global: f.ignore_global,
+            normal: f.normal,
         }
     }
 }
@@ -301,6 +392,7 @@ impl Default for Material {
             shading: ShadingModel::Pbr,
             style: StyleParams::default(),
             ignore_global: false,
+            normal: NormalMap::default(),
         }
     }
 }
@@ -614,6 +706,21 @@ mod tests {
         assert_eq!(p.shading, ShadingModel::Toon);
         assert_eq!(p.style.bands, 3);
         assert_eq!(p.style.outline_width, StyleParams::default().outline_width);
+    }
+
+    #[test]
+    fn normal_map_settings_default_and_round_trip() {
+        // Escenas anteriores: sin normal map, y no se escribe si no se toca.
+        let m: Material = serde_json::from_str(LEGACY).unwrap();
+        assert!(m.normal.is_default());
+        assert!(!serde_json::to_string(&m).unwrap().contains("normal"));
+        let mut m = Material::default();
+        m.normal = NormalMap { source: NormalSource::Generated, strength: 1.5, flip_green: true, generate: NormalGen { strength: 3.0, radius: 2.0, invert: true }, ..Default::default() };
+        let back: Material = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        assert_eq!(back, m);
+        // Campos ausentes toman su valor por defecto.
+        let p: Material = serde_json::from_str(&LEGACY.replace("}", r#","normal":{"source":"Texture","texture":"assets/n.png"}}"#)).unwrap();
+        assert_eq!((p.normal.source, p.normal.texture.as_str(), p.normal.strength), (NormalSource::Texture, "assets/n.png", 1.0));
     }
 
     #[test]

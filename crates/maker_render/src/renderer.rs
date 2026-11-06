@@ -5,7 +5,8 @@
 //!
 //! Cada modelo es un búfer de vértices con submallas; cada submalla tiene su
 //! material (textura de color base con mipmaps, factor, recorte o mezcla alfa,
-//! doble cara). Los pipelines se crean bajo demanda por combinación de modelo
+//! doble cara) y su normal map (del glTF, elegido en el material, generado a
+//! un PNG o generado en memoria en un hilo aparte). Los pipelines se crean bajo demanda por combinación de modelo
 //! de sombreado × piel × modo alfa × doble cara y los dibujos se ordenan por
 //! pipeline y material. Las mallas con piel leen su paleta de huesos de un
 //! búfer de almacenamiento que se sube una vez por fotograma.
@@ -17,10 +18,13 @@ use maker_engine::components::*;
 use maker_engine::math::{directional_light_view_proj, look_at};
 use maker_engine::mesh::{Aabb, MeshData};
 use maker_engine::model::{AlphaMode, ModelData, TextureSource};
+use maker_engine::normal_gen;
+use maker_engine::postproceso::Shade;
 use maker_engine::scene::Scene;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender};
 use wgpu::util::DeviceExt;
 
 use crate::postproceso::PostFx;
@@ -28,6 +32,8 @@ use crate::texture;
 
 pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+/// Los normal maps son datos, no color: sin conversión sRGB.
+const NORMAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 pub const SAMPLES: u32 = 4;
 const SHADOW_SIZE: u32 = 2048;
 const OBJ_STRIDE: u64 = 256;
@@ -40,6 +46,8 @@ struct Vertex {
     normal: [f32; 3],
     uv: [f32; 2],
     color: [u8; 4],
+    /// Tangente xyz + signo de la bitangente, en snorm16.
+    tangent: [i16; 4],
 }
 
 #[repr(C)]
@@ -78,7 +86,8 @@ struct GlobalsU {
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct ObjectU {
     model: [[f32; 4]; 4],
-    normal_m: [[f32; 4]; 4],
+    /// mat3x3 en WGSL: tres columnas de 16 B.
+    normal_m: [[f32; 4]; 3],
     base_color: [f32; 4],
     emissive: [f32; 4],
     params: [f32; 4],
@@ -88,6 +97,8 @@ struct ObjectU {
     rim: [f32; 4],
     style: [f32; 4],
     outline: [f32; 4],
+    /// x: intensidad del normal map, y: signo del verde, z: signo del determinante.
+    nrm: [f32; 4],
     /// x: primer hueso de esta entidad en el búfer de huesos.
     skin: [u32; 4],
 }
@@ -99,6 +110,36 @@ const _: () = assert!(std::mem::size_of::<ObjectU>() as u64 <= OBJ_STRIDE);
 struct MaterialU {
     factor: [f32; 4],
     params: [f32; 4],
+}
+
+/// Grupo 3: x = escala del normal map (0 = no hay).
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct NormalMapU {
+    params: [f32; 4],
+}
+
+/// Normal map plano (sin relieve): el grupo 3 de quien no tiene.
+const FLAT_NORMAL: usize = 0;
+
+/// Trabajo del modo automático: generar el normal map de una textura de color.
+struct AutoJob {
+    key: u64,
+    src: TextureSource,
+    params: NormalGen,
+}
+
+type AutoResult = (u64, Result<texture::MipChain, String>);
+
+/// Qué normal maps tiene y le faltan a un modelo (para el Inspector).
+#[derive(Clone, Debug, Default)]
+pub struct NormalInfo {
+    /// Submallas con textura de color.
+    pub textured: usize,
+    /// Submallas con normal map propio (glTF).
+    pub with_normal: usize,
+    /// Texturas de color sin normal map y dónde se escribiría el generado.
+    pub missing: Vec<(TextureSource, PathBuf)>,
 }
 
 /// Modelo de sombreado de un dibujo (familia de pipelines).
@@ -157,20 +198,30 @@ struct ShadowKey {
     double_sided: bool,
 }
 
-fn object_uniform(m: &Mat4, mat: &Material, skin_base: u32) -> ObjectU {
+fn object_uniform(m: &Mat4, mat: &Material, sh: &Shade, skin_base: u32) -> ObjectU {
     let bc = lin3([mat.base_color[0], mat.base_color[1], mat.base_color[2]]);
-    let st = &mat.style;
-    let outline = if mat.shading.has_outline() { st.outline_width.max(0.0) } else { 0.0 };
+    let st = sh.style;
+    let outline = if sh.shading.has_outline() { st.outline_width.max(0.0) } else { 0.0 };
+    let nm = glam::Mat3::from_mat4(*m).inverse().transpose();
+    let col = |c: Vec3| [c.x, c.y, c.z, 0.0];
+    let unlit = sh.shading == ShadingModel::Unlit;
+    let n = &mat.normal;
     ObjectU {
         model: m.to_cols_array_2d(),
-        normal_m: m.inverse().transpose().to_cols_array_2d(),
+        normal_m: [col(nm.x_axis), col(nm.y_axis), col(nm.z_axis)],
         base_color: v4(bc, mat.base_color[3]),
         emissive: v4(lin3(mat.emissive), mat.emissive_strength),
-        params: [mat.metallic, mat.roughness, if mat.shading == ShadingModel::Unlit { 1.0 } else { 0.0 }, st.hatch_scale],
+        params: [sh.metallic, sh.roughness, if unlit { 1.0 } else { 0.0 }, st.hatch_scale],
         shadow_tint: v4(lin3(st.shadow_color), st.bands.clamp(2, 4) as f32),
         rim: v4(lin3(st.rim_color), st.rim_strength),
         style: [st.softness, st.specular, st.specular_size, st.rim_width],
         outline: v4(lin3(st.outline_color), outline),
+        nrm: [
+            if unlit { 0.0 } else { n.strength.clamp(0.0, 2.0) },
+            if n.flip_green { -1.0 } else { 1.0 },
+            if m.determinant() < 0.0 { -1.0 } else { 1.0 },
+            0.0,
+        ],
         skin: [skin_base, 0, 0, 0],
     }
 }
@@ -225,6 +276,14 @@ struct GpuSub {
     mat: usize,
     alpha: Alpha,
     double_sided: bool,
+    /// Normal map del glTF (grupo 3) o `FLAT_NORMAL`.
+    normal: usize,
+    /// Textura de color sin normal map propio: de ella se generan.
+    base: Option<TextureSource>,
+    /// Dónde está su normal generado (`NormalSource::Generated`).
+    gen_path: Option<String>,
+    /// Hash de la clave de `base` (modo automático, sin reservas por fotograma).
+    base_hash: u64,
 }
 
 struct GpuModel {
@@ -239,6 +298,8 @@ struct GpuModel {
     aabb: Aabb,
     /// Huesos de la paleta (0 = estático).
     joints: u32,
+    textured: usize,
+    with_normal: usize,
 }
 
 struct Targets {
@@ -255,6 +316,8 @@ struct Draw {
     sub: usize,
     key: PipeKey,
     mat: usize,
+    /// Grupo 3 (normal map).
+    nrm: usize,
     slot: u32,
     /// Distancia² a la cámara (orden de los transparentes).
     depth: f32,
@@ -273,6 +336,7 @@ pub struct SceneRenderer {
     shadow_globals_bg: wgpu::BindGroup,
     object_bgl: wgpu::BindGroupLayout,
     material_bgl: wgpu::BindGroupLayout,
+    normal_bgl: wgpu::BindGroupLayout,
     object_buf: wgpu::Buffer,
     joint_buf: wgpu::Buffer,
     object_bg: wgpu::BindGroup,
@@ -280,6 +344,8 @@ pub struct SceneRenderer {
     joint_capacity: u64,
     module: wgpu::ShaderModule,
     main_layout: wgpu::PipelineLayout,
+    /// Sin el grupo 3: contornos (casco invertido y selección).
+    ink_layout: wgpu::PipelineLayout,
     shadow_layout: wgpu::PipelineLayout,
     pipelines: HashMap<PipeKey, wgpu::RenderPipeline>,
     shadow_pipelines: HashMap<ShadowKey, wgpu::RenderPipeline>,
@@ -295,6 +361,15 @@ pub struct SceneRenderer {
     materials: Vec<wgpu::BindGroup>,
     textures: HashMap<String, Option<Arc<wgpu::TextureView>>>,
     white: Arc<wgpu::TextureView>,
+    /// Grupos 3 (normal map); el 0 es el plano.
+    normal_bgs: Vec<wgpu::BindGroup>,
+    /// Normal maps por archivo (clave de la textura) → grupo 3 con escala 1.
+    normal_index: HashMap<String, usize>,
+    /// Modo automático: clave (textura + parámetros) → grupo 3 (plano hasta que esté).
+    auto_normals: HashMap<u64, usize>,
+    auto_tx: Option<Sender<AutoJob>>,
+    auto_rx: Option<Receiver<AutoResult>>,
+    auto_pending: usize,
     failed_models: HashSet<String>,
     // Memoria reutilizada entre fotogramas (sin reservas por fotograma).
     draws: Vec<Draw>,
@@ -317,7 +392,7 @@ fn v4(c: [f32; 3], w: f32) -> [f32; 4] {
     [c[0], c[1], c[2], w]
 }
 
-const VERTEX_ATTRS: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Unorm8x4];
+const VERTEX_ATTRS: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Unorm8x4, 6 => Snorm16x4];
 const SKIN_ATTRS: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![4 => Uint16x4, 5 => Unorm16x4];
 const INK_POS_ATTRS: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![0 => Float32x3];
 const INK_NORMAL_ATTRS: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![1 => Float32x3];
@@ -427,6 +502,24 @@ impl SceneRenderer {
             ],
         });
 
+        let normal_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("normal map"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+            ],
+        });
+
         let globals_size = std::mem::size_of::<GlobalsU>() as u64;
         let globals_buf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("globals"), size: globals_size, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let shadow_globals_buf =
@@ -483,6 +576,11 @@ impl SceneRenderer {
 
         let main_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("main"),
+            bind_group_layouts: &[Some(&globals_bgl), Some(&object_bgl), Some(&material_bgl), Some(&normal_bgl)],
+            immediate_size: 0,
+        });
+        let ink_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("ink"),
             bind_group_layouts: &[Some(&globals_bgl), Some(&object_bgl), Some(&material_bgl)],
             immediate_size: 0,
         });
@@ -493,7 +591,9 @@ impl SceneRenderer {
             immediate_size: 0,
         });
 
-        let white = Arc::new(Self::upload_texture(&device, &queue, "white", texture::build_mips(1, 1, vec![255; 4], None)));
+        let white = Arc::new(Self::upload_texture(&device, &queue, "white", texture::build_mips(1, 1, vec![255; 4], None), COLOR_FORMAT));
+        let flat = Self::upload_texture(&device, &queue, "flat normal", texture::build_normal_mips(1, 1, vec![128, 128, 255, 255]), NORMAL_FORMAT);
+        let flat_bg = Self::make_normal_bg(&device, &normal_bgl, &flat, 0.0);
         let mut r = Self {
             device,
             queue,
@@ -503,6 +603,7 @@ impl SceneRenderer {
             shadow_globals_bg,
             object_bgl,
             material_bgl,
+            normal_bgl,
             object_buf,
             joint_buf,
             object_bg,
@@ -510,6 +611,7 @@ impl SceneRenderer {
             joint_capacity,
             module,
             main_layout,
+            ink_layout,
             shadow_layout,
             pipelines: HashMap::new(),
             shadow_pipelines: HashMap::new(),
@@ -524,6 +626,12 @@ impl SceneRenderer {
             materials: Vec::new(),
             textures: HashMap::new(),
             white,
+            normal_bgs: vec![flat_bg],
+            normal_index: HashMap::new(),
+            auto_normals: HashMap::new(),
+            auto_tx: None,
+            auto_rx: None,
+            auto_pending: 0,
             failed_models: HashSet::new(),
             draws: Vec::new(),
             order: Vec::new(),
@@ -611,10 +719,10 @@ impl SceneRenderer {
         let vb = [Some(vertex_layout())];
         let vb_skin = [Some(vertex_layout()), Some(skin_layout())];
         let (label, layout, vs, fs, buffers, cull, write, cmp, blend): (_, _, _, _, &[Option<wgpu::VertexBufferLayout>], _, _, _, _) = match f {
-            Fixed::Ink { skinned: false } => ("ink outline", &self.main_layout, "vs_ink", "fs_ink", &ink_static, Some(wgpu::Face::Front), true, wgpu::CompareFunction::Less, None),
-            Fixed::Ink { skinned: true } => ("ink outline skinned", &self.main_layout, "vs_ink_skinned", "fs_ink", &ink_skinned, Some(wgpu::Face::Front), true, wgpu::CompareFunction::Less, None),
-            Fixed::Outline { skinned: false } => ("outline", &self.main_layout, "vs_outline", "fs_outline", &vb, Some(wgpu::Face::Front), true, wgpu::CompareFunction::LessEqual, None),
-            Fixed::Outline { skinned: true } => ("outline skinned", &self.main_layout, "vs_outline_skinned", "fs_outline", &vb_skin, Some(wgpu::Face::Front), true, wgpu::CompareFunction::LessEqual, None),
+            Fixed::Ink { skinned: false } => ("ink outline", &self.ink_layout, "vs_ink", "fs_ink", &ink_static, Some(wgpu::Face::Front), true, wgpu::CompareFunction::Less, None),
+            Fixed::Ink { skinned: true } => ("ink outline skinned", &self.ink_layout, "vs_ink_skinned", "fs_ink", &ink_skinned, Some(wgpu::Face::Front), true, wgpu::CompareFunction::Less, None),
+            Fixed::Outline { skinned: false } => ("outline", &self.ink_layout, "vs_outline", "fs_outline", &vb, Some(wgpu::Face::Front), true, wgpu::CompareFunction::LessEqual, None),
+            Fixed::Outline { skinned: true } => ("outline skinned", &self.ink_layout, "vs_outline_skinned", "fs_outline", &vb_skin, Some(wgpu::Face::Front), true, wgpu::CompareFunction::LessEqual, None),
             Fixed::Sky => ("sky", &self.globals_only, "vs_sky", "fs_sky", &[], None, false, wgpu::CompareFunction::Always, None),
             Fixed::Grid => ("grid", &self.globals_only, "vs_grid", "fs_grid", &[], None, false, wgpu::CompareFunction::LessEqual, Some(wgpu::BlendState::ALPHA_BLENDING)),
         };
@@ -668,7 +776,7 @@ impl SceneRenderer {
         self.shadow_pipelines.insert(key, p);
     }
 
-    fn upload_texture(device: &wgpu::Device, queue: &wgpu::Queue, label: &str, mips: texture::MipChain) -> wgpu::TextureView {
+    fn upload_texture(device: &wgpu::Device, queue: &wgpu::Queue, label: &str, mips: texture::MipChain, format: wgpu::TextureFormat) -> wgpu::TextureView {
         let (w, h, _) = &mips.levels[0];
         let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
@@ -676,7 +784,7 @@ impl SceneRenderer {
             mip_level_count: mips.levels.len() as u32,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -702,7 +810,7 @@ impl SceneRenderer {
             TextureSource::Embedded { bytes, .. } => Ok(bytes.as_ref().clone()),
         };
         let view = match bytes.and_then(|b| texture::decode(&b)) {
-            Ok((w, h, px)) => Some(Arc::new(Self::upload_texture(&self.device, &self.queue, &key, texture::build_mips(w, h, px, cutoff)))),
+            Ok((w, h, px)) => Some(Arc::new(Self::upload_texture(&self.device, &self.queue, &key, texture::build_mips(w, h, px, cutoff), COLOR_FORMAT))),
             Err(e) => {
                 maker_engine::log::error("render", format!("textura {key}: {e}"));
                 None
@@ -710,6 +818,208 @@ impl SceneRenderer {
         };
         self.textures.insert(key, view.clone());
         view.unwrap_or_else(|| self.white.clone())
+    }
+
+    fn make_normal_bg(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, view: &wgpu::TextureView, scale: f32) -> wgpu::BindGroup {
+        let u = NormalMapU { params: [scale, 0.0, 0.0, 0.0] };
+        let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("normal map"), contents: bytemuck::bytes_of(&u), usage: wgpu::BufferUsages::UNIFORM });
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("normal map"),
+            layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(view) }, wgpu::BindGroupEntry { binding: 1, resource: buf.as_entire_binding() }],
+        })
+    }
+
+    /// Lee y sube un normal map (lineal, mips renormalizados). Sin él, plano.
+    fn load_normal_view(&self, src: &TextureSource) -> Option<wgpu::TextureView> {
+        let bytes = match src {
+            TextureSource::File(p) => std::fs::read(p).map_err(|e| format!("{}: {e}", p.display())),
+            TextureSource::Embedded { bytes, .. } => Ok(bytes.as_ref().clone()),
+        };
+        match bytes.and_then(|b| texture::decode(&b)) {
+            Ok((w, h, px)) => Some(Self::upload_texture(&self.device, &self.queue, &src.key(), texture::build_normal_mips(w, h, px), NORMAL_FORMAT)),
+            Err(e) => {
+                maker_engine::log::error("render", format!("normal map {}: {e}", src.key()));
+                None
+            }
+        }
+    }
+
+    /// Grupo 3 de un normal map cacheado por clave (`key` + escala). Si no se
+    /// puede leer queda el plano (y no se reintenta hasta `reload_normal_map`).
+    fn normal_bg(&mut self, src: &TextureSource, scale: f32) -> usize {
+        let key = if scale == 1.0 { src.key() } else { format!("{}@{scale}", src.key()) };
+        if let Some(&i) = self.normal_index.get(&key) {
+            return i;
+        }
+        let i = match self.load_normal_view(src) {
+            Some(v) => {
+                self.normal_bgs.push(Self::make_normal_bg(&self.device, &self.normal_bgl, &v, scale));
+                self.normal_bgs.len() - 1
+            }
+            None => FLAT_NORMAL,
+        };
+        self.normal_index.insert(key, i);
+        i
+    }
+
+    /// Normal map de un archivo del proyecto o `biblioteca://…`.
+    fn normal_file(&mut self, path: &str) -> usize {
+        if let Some(&i) = self.normal_index.get(path) {
+            return i;
+        }
+        let full = biblioteca::resolve(path, self.project_root.as_deref());
+        let i = self.normal_bg(&TextureSource::File(full), 1.0);
+        self.normal_index.insert(path.to_string(), i);
+        i
+    }
+
+    /// Vuelve a leer un normal map que ha cambiado en disco (p. ej. al
+    /// regenerarlo en el editor). Los dibujos que lo usan lo ven en el
+    /// siguiente fotograma.
+    pub fn reload_normal_map(&mut self, path: &Path) {
+        let key = path.to_string_lossy().into_owned();
+        let Some(&i) = self.normal_index.get(&key) else { return };
+        match self.load_normal_view(&TextureSource::File(path.to_path_buf())) {
+            Some(v) => {
+                let bg = Self::make_normal_bg(&self.device, &self.normal_bgl, &v, 1.0);
+                if i == FLAT_NORMAL {
+                    self.normal_bgs.push(bg);
+                    let n = self.normal_bgs.len() - 1;
+                    self.normal_index.insert(key, n);
+                } else {
+                    self.normal_bgs[i] = bg;
+                }
+            }
+            None => {
+                self.normal_index.insert(key, FLAT_NORMAL);
+            }
+        }
+    }
+
+    /// Normal map en memoria (modo automático): lo pide al hilo de generación
+    /// la primera vez; hasta que llega se dibuja plano.
+    fn auto_normal(&mut self, key: u64, src: &TextureSource, params: NormalGen) -> usize {
+        if let Some(&i) = self.auto_normals.get(&key) {
+            return i;
+        }
+        self.auto_normals.insert(key, FLAT_NORMAL);
+        if self.auto_tx.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel::<AutoJob>();
+            let (done_tx, done_rx) = std::sync::mpsc::channel::<AutoResult>();
+            let spawned = std::thread::Builder::new().name("normal maps".into()).spawn(move || {
+                for job in rx {
+                    let r = normal_gen::generate_from(&job.src, &job.params).map(|(w, h, px)| texture::build_normal_mips(w, h, px));
+                    if done_tx.send((job.key, r)).is_err() {
+                        break;
+                    }
+                }
+            });
+            if spawned.is_err() {
+                return FLAT_NORMAL;
+            }
+            self.auto_tx = Some(tx);
+            self.auto_rx = Some(done_rx);
+        }
+        if let Some(tx) = &self.auto_tx
+            && tx.send(AutoJob { key, src: src.clone(), params }).is_ok()
+        {
+            self.auto_pending += 1;
+        }
+        FLAT_NORMAL
+    }
+
+    /// Recoge los normal maps automáticos ya generados y los sube.
+    fn poll_auto_normals(&mut self) {
+        let Some(rx) = &self.auto_rx else { return };
+        let mut done: Vec<AutoResult> = Vec::new();
+        while let Ok(r) = rx.try_recv() {
+            done.push(r);
+        }
+        for (key, r) in done {
+            self.auto_pending = self.auto_pending.saturating_sub(1);
+            match r {
+                Ok(mips) => {
+                    let v = Self::upload_texture(&self.device, &self.queue, "auto normal map", mips, NORMAL_FORMAT);
+                    self.normal_bgs.push(Self::make_normal_bg(&self.device, &self.normal_bgl, &v, 1.0));
+                    self.auto_normals.insert(key, self.normal_bgs.len() - 1);
+                }
+                Err(e) => maker_engine::log::error("render", format!("normal map automático: {e}")),
+            }
+        }
+    }
+
+    /// Normal maps automáticos aún en el hilo de generación.
+    pub fn pending_normal_maps(&self) -> usize {
+        self.auto_pending
+    }
+
+    /// Espera a que el hilo termine los normal maps automáticos (miniaturas,
+    /// capturas y tests). Devuelve si terminaron antes de `timeout`.
+    pub fn wait_normal_maps(&mut self, timeout: std::time::Duration) -> bool {
+        let t0 = std::time::Instant::now();
+        while self.auto_pending > 0 && t0.elapsed() < timeout {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            self.poll_auto_normals();
+        }
+        self.auto_pending == 0
+    }
+
+    /// Normal maps de un modelo: cuántas submallas tienen textura de color,
+    /// cuántas normal map propio, y qué texturas de color no lo tienen.
+    pub fn normal_info(&mut self, src: &MeshSource) -> Option<NormalInfo> {
+        let i = self.ensure_model(src)?;
+        let m = &self.models[i];
+        let mut missing: Vec<(TextureSource, PathBuf)> = Vec::new();
+        for s in &m.subs {
+            if let (Some(b), Some(p)) = (&s.base, &s.gen_path)
+                && !missing.iter().any(|(x, _)| x == b)
+            {
+                missing.push((b.clone(), PathBuf::from(p)));
+            }
+        }
+        Some(NormalInfo { textured: m.textured, with_normal: m.with_normal, missing })
+    }
+
+    /// Grupo 3 de una submalla según el normal map del material.
+    fn sub_normal(&mut self, mi: usize, si: usize, n: &NormalMap) -> usize {
+        let s = &self.models[mi].subs[si];
+        match n.source {
+            NormalSource::Model => s.normal,
+            NormalSource::Texture => {
+                if n.texture.is_empty() {
+                    s.normal
+                } else {
+                    self.normal_file(&n.texture)
+                }
+            }
+            NormalSource::Generated => match &s.gen_path {
+                None => s.normal,
+                Some(p) => match self.normal_index.get(p.as_str()) {
+                    Some(&i) => i,
+                    None => {
+                        let p = p.clone();
+                        let i = if Path::new(&p).is_file() { self.normal_bg(&TextureSource::File(PathBuf::from(&p)), 1.0) } else { FLAT_NORMAL };
+                        self.normal_index.insert(p, i);
+                        i
+                    }
+                },
+            },
+            NormalSource::Auto => {
+                if s.base.is_none() {
+                    return s.normal;
+                }
+                let mut key = s.base_hash;
+                for b in n.generate.bits() {
+                    key = (key ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3);
+                }
+                if let Some(&i) = self.auto_normals.get(&key) {
+                    return i;
+                }
+                let src = s.base.clone().unwrap();
+                self.auto_normal(key, &src, n.generate)
+            }
+        }
     }
 
     fn material_bind_group(&mut self, factor: [f32; 4], cutoff: f32, tex: &wgpu::TextureView) -> usize {
@@ -779,6 +1089,9 @@ impl SceneRenderer {
         self.model_index.clear();
         self.materials.clear();
         self.textures.clear();
+        self.normal_bgs.truncate(1);
+        self.normal_index.clear();
+        self.auto_normals.clear();
         self.failed_models.clear();
         maker_engine::animation::clear_cache();
     }
@@ -822,6 +1135,7 @@ impl SceneRenderer {
                 normal: m.normals.get(i).copied().unwrap_or(Vec3::Y).to_array(),
                 uv: m.uvs.get(i).copied().unwrap_or_default().to_array(),
                 color: m.colors.get(i).copied().unwrap_or([255; 4]),
+                tangent: m.tangents.get(i).copied().unwrap_or(Vec4::new(1.0, 0.0, 0.0, 1.0)).to_array().map(|c| (c.clamp(-1.0, 1.0) * 32767.0).round() as i16),
             })
             .collect();
         let vbuf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("mesh vertices"), contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX });
@@ -839,6 +1153,7 @@ impl SceneRenderer {
             self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("mesh skin"), contents: bytemuck::cast_slice(&sv), usage: wgpu::BufferUsages::VERTEX })
         });
         let mut mat_bg: Vec<usize> = Vec::with_capacity(data.materials.len());
+        let mut nrm_bg: Vec<usize> = Vec::with_capacity(data.materials.len());
         for mm in &data.materials {
             let cutoff = if let AlphaMode::Mask(c) = mm.alpha { Some(c) } else { None };
             let tex = match &mm.texture {
@@ -846,12 +1161,21 @@ impl SceneRenderer {
                 None => self.white.clone(),
             };
             mat_bg.push(self.material_bind_group(mm.base_color, cutoff.unwrap_or(0.0), &tex));
+            nrm_bg.push(match &mm.normal {
+                Some(n) => self.normal_bg(n, mm.normal_scale),
+                None => FLAT_NORMAL,
+            });
         }
+        let root = self.project_root.clone().unwrap_or_else(|| PathBuf::from("."));
+        let (mut textured, mut with_normal) = (0, 0);
         let subs = data
             .submeshes
             .iter()
             .map(|s| {
                 let mm = &data.materials[s.material];
+                textured += mm.texture.is_some() as usize;
+                with_normal += mm.normal.is_some() as usize;
+                let base = mm.texture.clone().filter(|_| mm.normal.is_none());
                 GpuSub {
                     first: s.first_index,
                     count: s.index_count,
@@ -862,6 +1186,10 @@ impl SceneRenderer {
                         AlphaMode::Blend => Alpha::Blend,
                     },
                     double_sided: mm.double_sided,
+                    normal: nrm_bg[s.material],
+                    gen_path: base.as_ref().map(|b| normal_gen::output_path(b, &root).to_string_lossy().into_owned()),
+                    base_hash: base.as_ref().map(|b| normal_gen::hash_bytes(b.key().as_bytes())).unwrap_or(0),
+                    base,
                 }
             })
             .collect();
@@ -872,13 +1200,14 @@ impl SceneRenderer {
             let h = aabb.size() * 0.75;
             aabb = Aabb { min: c - h, max: c + h };
         }
-        self.models.push(GpuModel { vbuf, smooth, skin, ibuf, subs, aabb, joints: if skinned { data.anim.skeleton.joints.len() as u32 } else { 0 } });
+        self.models.push(GpuModel { vbuf, smooth, skin, ibuf, subs, aabb, joints: if skinned { data.anim.skeleton.joints.len() as u32 } else { 0 }, textured, with_normal });
         self.models.len() - 1
     }
 
     /// Dibuja la escena en la textura de salida y envía los comandos a la GPU.
     pub fn render(&mut self, scene: &Scene, view: &RenderView, opts: &RenderOptions) {
         let Some((w, h)) = self.targets.as_ref().map(|t| t.size) else { return };
+        self.poll_auto_normals();
         let mut stats = FrameStats::default();
         let view_proj = view.view_proj();
 
@@ -1004,19 +1333,25 @@ impl SceneRenderer {
                     None => joints.extend(std::iter::repeat_n(Mat4::IDENTITY, model.joints as usize)),
                 }
             }
-            let mat = &env.global_shading.apply(&mr.material);
-            bytes.extend_from_slice(bytemuck::bytes_of(&object_uniform(&m, mat, skin_base)));
+            let sh = env.global_shading.resolve(&mr.material);
+            bytes.extend_from_slice(bytemuck::bytes_of(&object_uniform(&m, &mr.material, &sh, skin_base)));
             bytes.resize((slot as usize + 1) * OBJ_STRIDE as usize, 0);
-            let ink = mat.shading.has_outline() && mat.style.outline_width > 0.0;
+            let ink = sh.shading.has_outline() && sh.style.outline_width > 0.0;
             let depth = wb.center().distance_squared(view.eye);
             let selected = opts.selected.contains(id);
-            for (si, s) in model.subs.iter().enumerate() {
-                let key = PipeKey { alpha: s.alpha, pipe: pipe_of(mat.shading), skinned: model.joints > 0, double_sided: s.double_sided, hdr };
+            let (joints_n, n_subs) = (model.joints, model.subs.len());
+            let lit = sh.shading != ShadingModel::Unlit && mr.material.normal.strength > 0.0;
+            for si in 0..n_subs {
+                // Sin luz no se usa: todos con el plano (menos cambios de grupo).
+                let nrm = if lit && visible { self.sub_normal(mi, si, &mr.material.normal) } else { FLAT_NORMAL };
+                let s = &self.models[mi].subs[si];
+                let key = PipeKey { alpha: s.alpha, pipe: pipe_of(sh.shading), skinned: joints_n > 0, double_sided: s.double_sided, hdr };
                 draws.push(Draw {
                     model: mi,
                     sub: si,
                     key,
                     mat: s.mat,
+                    nrm,
                     slot,
                     depth,
                     ink: ink && s.alpha == Alpha::Opaque,
@@ -1035,7 +1370,7 @@ impl SceneRenderer {
                 if da.key.alpha == Alpha::Blend {
                     db.depth.total_cmp(&da.depth)
                 } else {
-                    da.key.cmp(&db.key).then(da.mat.cmp(&db.mat)).then(da.model.cmp(&db.model))
+                    da.key.cmp(&db.key).then(da.mat.cmp(&db.mat)).then(da.nrm.cmp(&db.nrm)).then(da.model.cmp(&db.model))
                 }
             })
         });
@@ -1150,7 +1485,7 @@ impl SceneRenderer {
             let mut bound: Option<PipeKey> = None;
             // Los transparentes van tras los contornos (que sí escriben profundidad).
             let split = order.iter().position(|&i| draws[i].key.alpha == Alpha::Blend).unwrap_or(order.len());
-            let draw_list = |pass: &mut wgpu::RenderPass, list: &[usize], stats: &mut FrameStats, bound: &mut Option<PipeKey>, last: &mut (u32, usize, usize)| {
+            let draw_list = |pass: &mut wgpu::RenderPass, list: &[usize], stats: &mut FrameStats, bound: &mut Option<PipeKey>, last: &mut (u32, usize, usize, usize)| {
                 for &i in list {
                     let d = &draws[i];
                     if *bound != Some(d.key) {
@@ -1168,6 +1503,10 @@ impl SceneRenderer {
                         pass.set_bind_group(2, &self.materials[d.mat], &[]);
                         last.1 = d.mat;
                     }
+                    if d.nrm != last.3 {
+                        pass.set_bind_group(3, &self.normal_bgs[d.nrm], &[]);
+                        last.3 = d.nrm;
+                    }
                     if d.model != last.2 {
                         pass.set_vertex_buffer(0, m.vbuf.slice(..));
                         if let Some(sk) = &m.skin {
@@ -1181,7 +1520,7 @@ impl SceneRenderer {
                     stats.triangles += s.count as u64 / 3;
                 }
             };
-            let mut last = (u32::MAX, usize::MAX, usize::MAX);
+            let mut last = (u32::MAX, usize::MAX, usize::MAX, usize::MAX);
             draw_list(&mut pass, &order[..split], &mut stats, &mut bound, &mut last);
             // Contornos de casco invertido, tras los opacos para aprovechar el early-z.
             if order.iter().any(|&i| draws[i].ink) {
@@ -1208,7 +1547,7 @@ impl SceneRenderer {
                     stats.outlines += 1;
                 }
                 bound = None;
-                last = (u32::MAX, usize::MAX, usize::MAX);
+                last = (u32::MAX, usize::MAX, usize::MAX, usize::MAX);
             }
             draw_list(&mut pass, &order[split..], &mut stats, &mut bound, &mut last);
             if draws.iter().any(|d| d.selected && d.visible) {
@@ -1602,5 +1941,249 @@ pub(crate) mod tests {
         let (_, _, px) = r.read_pixels().unwrap();
         let red = px.chunks(4).filter(|p| p[0] > 180 && p[1] < 60 && p[2] < 60).count();
         assert!(red > 30, "el contorno rojo debe verse: {red} píxeles");
+    }
+
+    // ───────────────────────────── normal maps ─────────────────────────────
+
+    /// Escena de prueba: el suelo de la escena inicial (sin el cubo) y un sol
+    /// que viaja hacia +Z: la luz llega desde −Z, que en el plano es «arriba»
+    /// en la imagen (V = 0).
+    fn normal_scene() -> Scene {
+        let mut scene = Scene::starter();
+        let cube = scene.find_by_name("Cubo").unwrap();
+        scene.despawn_recursive(cube);
+        let sun = scene.find_by_name("Sol").unwrap();
+        let dir = Vec3::new(0.0, -1.0, 1.0).normalize();
+        scene.set_transform(sun, Transform::from_translation(Vec3::Y * 10.0).with_rotation(glam::Quat::from_rotation_arc(Vec3::NEG_Z, dir)));
+        // Luz moderada: el tonemap no satura el suelo y se ven las dos inclinaciones.
+        let mut l = scene.get::<Light>(sun).unwrap();
+        l.intensity = 1.2;
+        scene.insert(sun, l);
+        scene.update_transforms();
+        scene
+    }
+
+    /// PNG 2×2 de una normal uniforme en espacio tangente (convención OpenGL).
+    fn write_normal_png(path: &Path, n: Vec3) {
+        let n = n.normalize();
+        let px = [n.x, n.y, n.z].map(|c| ((c * 0.5 + 0.5) * 255.0).round() as u8);
+        image::RgbImage::from_pixel(2, 2, image::Rgb(px)).save(path).unwrap();
+    }
+
+    fn set_ground(scene: &mut Scene, f: impl FnOnce(&mut MeshRenderer)) {
+        let g = scene.find_by_name("Suelo").unwrap();
+        let mut mr = scene.get::<MeshRenderer>(g).unwrap();
+        f(&mut mr);
+        scene.insert(g, mr);
+    }
+
+    /// Luminancia media de la franja de suelo de la parte baja de la imagen.
+    fn ground_luma(px: &[u8]) -> f64 {
+        let mut sum = 0.0;
+        let mut n = 0.0;
+        for y in 130..178 {
+            for x in 20..300 {
+                let p = px_at(px, x, y);
+                sum += p.iter().map(|&c| c as f64).sum::<f64>() / 3.0;
+                n += 1.0;
+            }
+        }
+        sum / n
+    }
+
+    fn temp_project(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("maker-normal-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    /// Un normal map inclinado hacia «arriba» en la imagen (verde > 0,5)
+    /// ilumina más el plano cuando la luz viene de ese lado; el verde
+    /// invertido (DirectX) da lo contrario; intensidad 0 y sin luz lo ignoran;
+    /// uno plano no cambia nada (se muestrea en lineal, no en sRGB).
+    #[test]
+    fn normal_map_tilts_lighting_in_gltf_convention() {
+        let Some((device, queue, _gpu)) = device() else { return };
+        let root = temp_project("tilt");
+        write_normal_png(&root.join("arriba.png"), Vec3::new(0.0, 0.6, 0.8));
+        write_normal_png(&root.join("abajo.png"), Vec3::new(0.0, -0.6, 0.8));
+        write_normal_png(&root.join("izq.png"), Vec3::new(-0.6, 0.0, 0.8));
+        write_normal_png(&root.join("der.png"), Vec3::new(0.6, 0.0, 0.8));
+        image::RgbImage::from_pixel(2, 2, image::Rgb([128, 128, 255])).save(root.join("plano.png")).unwrap();
+        let mut r = SceneRenderer::new(&device, &queue);
+        r.project_root = Some(root.clone());
+        r.resize(320, 180);
+        let mut scene = normal_scene();
+        let base = render_px(&mut r, &scene, false);
+        let with = |scene: &mut Scene, r: &mut SceneRenderer, tex: &str, f: &dyn Fn(&mut NormalMap)| {
+            set_ground(scene, |mr| {
+                mr.material.normal = NormalMap { source: NormalSource::Texture, texture: tex.into(), ..Default::default() };
+                f(&mut mr.material.normal);
+            });
+            render_px(r, scene, false)
+        };
+        let plano = with(&mut scene, &mut r, "plano.png", &|_| {});
+        assert!(max_diff(&plano, &base) <= 2, "un normal map plano no cambia nada: {}", max_diff(&plano, &base));
+        let up = with(&mut scene, &mut r, "arriba.png", &|_| {});
+        let down = with(&mut scene, &mut r, "abajo.png", &|_| {});
+        let (lb, lu, ld) = (ground_luma(&base), ground_luma(&up), ground_luma(&down));
+        assert!(lu > lb + 8.0 && ld + 8.0 < lb, "verde arriba ilumina, abajo oscurece: {lu:.1} / {lb:.1} / {ld:.1}");
+        // Verde invertido = la inclinación contraria.
+        let flipped = with(&mut scene, &mut r, "arriba.png", &|n| n.flip_green = true);
+        assert!(max_diff(&flipped, &down) <= 2, "DirectX: {}", max_diff(&flipped, &down));
+        // La X es perpendicular a la luz: izquierda y derecha, iguales.
+        let left = with(&mut scene, &mut r, "izq.png", &|_| {});
+        let right = with(&mut scene, &mut r, "der.png", &|_| {});
+        assert!((ground_luma(&left) - ground_luma(&right)).abs() < 1.0);
+        // Con la luz llegando desde +X (+U, la tangente), el rojo > 0,5 ilumina.
+        let sun = scene.find_by_name("Sol").unwrap();
+        let t = scene.transform(sun);
+        scene.set_transform(sun, t.with_rotation(glam::Quat::from_rotation_arc(Vec3::NEG_Z, Vec3::new(-1.0, -1.0, 0.0).normalize())));
+        scene.update_transforms();
+        let left = with(&mut scene, &mut r, "izq.png", &|_| {});
+        let right = with(&mut scene, &mut r, "der.png", &|_| {});
+        assert!(ground_luma(&right) > ground_luma(&left) + 20.0, "{} vs {}", ground_luma(&right), ground_luma(&left));
+        scene.set_transform(sun, t);
+        scene.update_transforms();
+        // Intensidad: 0 = sin relieve; 2 = más que 1.
+        let zero = with(&mut scene, &mut r, "arriba.png", &|n| n.strength = 0.0);
+        assert_eq!(zero, base);
+        let double = with(&mut scene, &mut r, "abajo.png", &|n| n.strength = 2.0);
+        assert!(ground_luma(&double) + 2.0 < ld);
+        // Toon y plumilla también lo usan.
+        for model in [ShadingModel::Toon, ShadingModel::Hatching] {
+            set_ground(&mut scene, |mr| {
+                mr.material.shading = model;
+                mr.material.style.outline_width = 0.0;
+            });
+            let a = with(&mut scene, &mut r, "arriba.png", &|_| {});
+            let b = with(&mut scene, &mut r, "abajo.png", &|_| {});
+            assert!(mean_diff(&a, &b) > 1.0, "{model:?}: {}", mean_diff(&a, &b));
+        }
+        // Sin luz lo ignora.
+        set_ground(&mut scene, |mr| mr.material.shading = ShadingModel::Unlit);
+        let a = with(&mut scene, &mut r, "arriba.png", &|_| {});
+        set_ground(&mut scene, |mr| mr.material.normal = NormalMap::default());
+        assert_eq!(a, render_px(&mut r, &scene, false));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn b64(data: &[u8]) -> String {
+        const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for c in data.chunks(3) {
+            let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+            for i in 0..4 {
+                out.push(if i <= c.len() { T[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+            }
+        }
+        out
+    }
+
+    /// glTF de un plano de 2×2 m (como la primitiva) con textura de color y,
+    /// opcionalmente, `normalTexture`.
+    fn write_plane_gltf(path: &Path, color: &str, normal: Option<(&str, f32)>) {
+        let pos: [f32; 12] = [-1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0, -1.0, -1.0, 0.0, -1.0];
+        let nrm: [f32; 12] = [0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0];
+        let uv: [f32; 8] = [0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0];
+        let idx: [u16; 6] = [0, 1, 2, 0, 2, 3];
+        let mut buf: Vec<u8> = pos.iter().chain(&nrm).chain(&uv).flat_map(|f| f.to_le_bytes()).collect();
+        buf.extend(idx.iter().flat_map(|i| i.to_le_bytes()));
+        let (images, textures, ntex) = match normal {
+            Some((n, scale)) => (format!(r#"[{{"uri":"{color}"}},{{"uri":"{n}"}}]"#), r#"[{"source":0},{"source":1}]"#, format!(r#","normalTexture":{{"index":1,"scale":{scale}}}"#)),
+            None => (format!(r#"[{{"uri":"{color}"}}]"#), r#"[{"source":0}]"#, String::new()),
+        };
+        let json = format!(
+            r#"{{"asset":{{"version":"2.0"}},"scene":0,"scenes":[{{"nodes":[0]}}],"nodes":[{{"mesh":0}}],
+            "meshes":[{{"primitives":[{{"attributes":{{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2}},"indices":3,"material":0}}]}}],
+            "materials":[{{"pbrMetallicRoughness":{{"baseColorTexture":{{"index":0}}}}{ntex}}}],
+            "images":{images},"textures":{textures},
+            "buffers":[{{"byteLength":{},"uri":"data:application/octet-stream;base64,{}"}}],
+            "bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":48}},{{"buffer":0,"byteOffset":48,"byteLength":48}},{{"buffer":0,"byteOffset":96,"byteLength":32}},{{"buffer":0,"byteOffset":128,"byteLength":12}}],
+            "accessors":[{{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3","min":[-1,0,-1],"max":[1,0,1]}},
+                         {{"bufferView":1,"componentType":5126,"count":4,"type":"VEC3"}},
+                         {{"bufferView":2,"componentType":5126,"count":4,"type":"VEC2"}},
+                         {{"bufferView":3,"componentType":5123,"count":6,"type":"SCALAR"}}]}}"#,
+            buf.len(),
+            b64(&buf)
+        );
+        std::fs::write(path, json).unwrap();
+    }
+
+    /// Modelos glTF: el `normalTexture` del archivo se usa (con su escala);
+    /// sin él, el normal generado en memoria (automático) y el guardado en
+    /// PNG dan la misma imagen y cambian la luz respecto al plano.
+    #[test]
+    fn gltf_generated_and_auto_normal_maps() {
+        let Some((device, queue, _gpu)) = device() else { return };
+        let root = temp_project("gltf");
+        // Color con relieve: franjas horizontales claras y oscuras.
+        let mut color = image::RgbImage::new(64, 64);
+        for (_, y, p) in color.enumerate_pixels_mut() {
+            *p = if (y / 8) % 2 == 0 { image::Rgb([230, 230, 230]) } else { image::Rgb([60, 60, 60]) };
+        }
+        color.save(root.join("color.png")).unwrap();
+        write_normal_png(&root.join("n.png"), Vec3::new(0.0, 0.6, 0.8));
+        write_plane_gltf(&root.join("plano.gltf"), "color.png", None);
+        write_plane_gltf(&root.join("plano_n.gltf"), "color.png", Some(("n.png", 1.0)));
+        write_plane_gltf(&root.join("plano_n0.gltf"), "color.png", Some(("n.png", 0.0)));
+        let mut r = SceneRenderer::new(&device, &queue);
+        r.project_root = Some(root.clone());
+        r.resize(320, 180);
+        let mut scene = normal_scene();
+        let model = |m: &str| MeshSource::Model(m.into());
+        set_ground(&mut scene, |mr| {
+            mr.mesh = model("plano.gltf");
+            mr.material = Material { base_color: [1.0; 4], ..Default::default() };
+        });
+        let g = scene.find_by_name("Suelo").unwrap();
+        scene.set_transform(g, Transform::default().with_scale(Vec3::new(10.0, 1.0, 10.0)));
+        scene.update_transforms();
+        let flat = render_px(&mut r, &scene, false);
+        let info = r.normal_info(&model("plano.gltf")).unwrap();
+        assert_eq!((info.textured, info.with_normal, info.missing.len()), (1, 0, 1));
+        assert_eq!(info.missing[0].1, root.join("color_normal_gen.png"));
+        // Normal map del glTF; escala 0 = plano.
+        set_ground(&mut scene, |mr| mr.mesh = model("plano_n.gltf"));
+        let own = render_px(&mut r, &scene, false);
+        // Lo mismo que elegir esa textura a mano en el material.
+        set_ground(&mut scene, |mr| {
+            mr.mesh = model("plano.gltf");
+            mr.material.normal = NormalMap { source: NormalSource::Texture, texture: "n.png".into(), ..Default::default() };
+        });
+        assert!(max_diff(&render_px(&mut r, &scene, false), &own) <= 1);
+        set_ground(&mut scene, |mr| {
+            mr.mesh = model("plano_n.gltf");
+            mr.material.normal = NormalMap::default();
+        });
+        let info = r.normal_info(&model("plano_n.gltf")).unwrap();
+        assert_eq!((info.with_normal, info.missing.len()), (1, 0));
+        set_ground(&mut scene, |mr| mr.mesh = model("plano_n0.gltf"));
+        assert!(max_diff(&render_px(&mut r, &scene, false), &flat) <= 2);
+        // Automático: plano hasta que el hilo termina, luego con relieve.
+        set_ground(&mut scene, |mr| {
+            mr.mesh = model("plano.gltf");
+            mr.material.normal.source = NormalSource::Auto;
+            mr.material.normal.generate = NormalGen { strength: 6.0, radius: 0.0, invert: false };
+        });
+        let first = render_px(&mut r, &scene, false);
+        assert_eq!(first, flat, "mientras se genera, plano");
+        assert!(r.wait_normal_maps(std::time::Duration::from_secs(20)));
+        let auto = render_px(&mut r, &scene, false);
+        assert!(mean_diff(&auto, &flat) > 0.5, "{}", mean_diff(&auto, &flat));
+        // Generado a PNG (sin archivo aún: plano).
+        set_ground(&mut scene, |mr| mr.material.normal.source = NormalSource::Generated);
+        assert_eq!(render_px(&mut r, &scene, false), flat);
+        let gen_params = NormalGen { strength: 6.0, radius: 0.0, invert: false };
+        assert!(normal_gen::generate_file(&info_base(&mut r), &root.join("color_normal_gen.png"), &gen_params).unwrap());
+        r.reload_normal_map(&root.join("color_normal_gen.png"));
+        let generated = render_px(&mut r, &scene, false);
+        assert!(max_diff(&generated, &auto) <= 1, "PNG = memoria: {}", max_diff(&generated, &auto));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn info_base(r: &mut SceneRenderer) -> TextureSource {
+        r.normal_info(&MeshSource::Model("plano.gltf".into())).unwrap().missing[0].0.clone()
     }
 }

@@ -13,6 +13,7 @@ pub mod log;
 pub mod math;
 pub mod mesh;
 pub mod model;
+pub mod normal_gen;
 pub mod physics;
 pub mod postproceso;
 pub mod project;

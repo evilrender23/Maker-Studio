@@ -47,13 +47,17 @@ pub struct ModelMaterial {
     /// Factor de color base en lineal + alfa.
     pub base_color: [f32; 4],
     pub texture: Option<TextureSource>,
+    /// Normal map (`normalTexture` de glTF, convención OpenGL: verde arriba).
+    pub normal: Option<TextureSource>,
+    /// `normalTexture.scale`: multiplica X e Y del normal map.
+    pub normal_scale: f32,
     pub alpha: AlphaMode,
     pub double_sided: bool,
 }
 
 impl Default for ModelMaterial {
     fn default() -> Self {
-        Self { name: String::new(), base_color: [1.0; 4], texture: None, alpha: AlphaMode::Opaque, double_sided: false }
+        Self { name: String::new(), base_color: [1.0; 4], texture: None, normal: None, normal_scale: 1.0, alpha: AlphaMode::Opaque, double_sided: false }
     }
 }
 
@@ -318,32 +322,35 @@ impl ModelData {
         // Materiales.
         let model_dir = base.map(Path::to_path_buf).unwrap_or_default();
         let mut materials: Vec<ModelMaterial> = Vec::new();
-        for m in doc.materials() {
-            let pbr = m.pbr_metallic_roughness();
-            let texture = pbr.base_color_texture().and_then(|info| {
-                let img = info.texture().source();
-                match img.source() {
-                    gltf::image::Source::Uri { uri, .. } => {
-                        if let Some(data) = uri.strip_prefix("data:") {
-                            let b64 = data.split_once(',').map(|(_, b)| b).unwrap_or("");
-                            Some(TextureSource::Embedded { key: format!("{}#{}", path.display(), img.index()), bytes: Arc::new(base64_decode(b64)) })
-                        } else {
-                            Some(TextureSource::File(model_dir.join(percent_decode(uri))))
-                        }
-                    }
-                    gltf::image::Source::View { view, .. } => {
-                        let buf = &buffers[view.buffer().index()].0;
-                        let bytes = buf.get(view.offset()..view.offset() + view.length())?.to_vec();
-                        Some(TextureSource::Embedded { key: format!("{}#{}", path.display(), img.index()), bytes: Arc::new(bytes) })
+        let image_source = |img: gltf::Image| -> Option<TextureSource> {
+            match img.source() {
+                gltf::image::Source::Uri { uri, .. } => {
+                    if let Some(data) = uri.strip_prefix("data:") {
+                        let b64 = data.split_once(',').map(|(_, b)| b).unwrap_or("");
+                        Some(TextureSource::Embedded { key: format!("{}#{}", path.display(), img.index()), bytes: Arc::new(base64_decode(b64)) })
+                    } else {
+                        Some(TextureSource::File(model_dir.join(percent_decode(uri))))
                     }
                 }
-            });
+                gltf::image::Source::View { view, .. } => {
+                    let buf = &buffers[view.buffer().index()].0;
+                    let bytes = buf.get(view.offset()..view.offset() + view.length())?.to_vec();
+                    Some(TextureSource::Embedded { key: format!("{}#{}", path.display(), img.index()), bytes: Arc::new(bytes) })
+                }
+            }
+        };
+        for m in doc.materials() {
+            let pbr = m.pbr_metallic_roughness();
+            let texture = pbr.base_color_texture().and_then(|info| image_source(info.texture().source()));
+            let normal_info = m.normal_texture();
+            let normal_scale = normal_info.as_ref().map(|n| n.scale()).unwrap_or(1.0);
+            let normal = normal_info.and_then(|n| image_source(n.texture().source()));
             let alpha = match m.alpha_mode() {
                 gltf::material::AlphaMode::Opaque => AlphaMode::Opaque,
                 gltf::material::AlphaMode::Mask => AlphaMode::Mask(m.alpha_cutoff().unwrap_or(0.5)),
                 gltf::material::AlphaMode::Blend => AlphaMode::Blend,
             };
-            materials.push(ModelMaterial { name: m.name().unwrap_or("").to_string(), base_color: pbr.base_color_factor(), texture, alpha, double_sided: m.double_sided() });
+            materials.push(ModelMaterial { name: m.name().unwrap_or("").to_string(), base_color: pbr.base_color_factor(), texture, normal, normal_scale, alpha, double_sided: m.double_sided() });
         }
         let default_mat = materials.len();
         materials.push(ModelMaterial::default());
@@ -383,21 +390,29 @@ impl ModelData {
                     part.colors = c.into_rgba_u8().collect();
                     any_color = true;
                 }
-                match (skin, reader.read_joints(0), reader.read_weights(0)) {
+                let skinned = match (skin, reader.read_joints(0), reader.read_weights(0)) {
                     (Some(base_j), Some(j), Some(w)) => {
                         part.joints = j.into_u16().map(|j| j.map(|x| x + base_j)).collect();
                         part.weights = w.into_f32().collect();
                         any_skin = true;
+                        true
                     }
-                    _ => {
-                        // Estática: se hornea la transformación del nodo.
-                        let m = rest_globals[ni];
-                        if m != Mat4::IDENTITY {
-                            let mut baked = MeshData::default();
-                            baked.append(&part, m);
-                            baked.colors = std::mem::take(&mut part.colors);
-                            part = baked;
-                        }
+                    _ => false,
+                };
+                // TANGENT del archivo si lo trae; si no, MikkTSpace (puede
+                // duplicar vértices en las costuras, por eso va tras leer todo).
+                match reader.read_tangents() {
+                    Some(t) if t.len() == n => part.tangents = t.map(Vec4::from).collect(),
+                    _ => part.compute_tangents(),
+                }
+                if !skinned {
+                    // Estática: se hornea la transformación del nodo.
+                    let m = rest_globals[ni];
+                    if m != Mat4::IDENTITY {
+                        let mut baked = MeshData::default();
+                        baked.append(&part, m);
+                        baked.colors = std::mem::take(&mut part.colors);
+                        part = baked;
                     }
                 }
                 let material = prim.material().index().unwrap_or(default_mat);
@@ -480,6 +495,7 @@ fn merge(dst: &mut MeshData, src: MeshData) {
     dst.positions.extend(src.positions);
     dst.normals.extend(src.normals);
     dst.uvs.extend(src.uvs);
+    dst.tangents.extend(src.tangents);
     dst.colors.extend(src.colors);
     dst.joints.extend(src.joints);
     dst.weights.extend(src.weights);

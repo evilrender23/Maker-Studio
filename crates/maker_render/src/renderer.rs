@@ -50,6 +50,7 @@ struct GlobalsU {
     fog: [f32; 4],
     params: [f32; 4],
     points: [PointU; MAX_POINTS],
+    viewport: [f32; 4],
 }
 
 #[repr(C)]
@@ -60,6 +61,49 @@ struct ObjectU {
     base_color: [f32; 4],
     emissive: [f32; 4],
     params: [f32; 4],
+    // Modelos estilizados. Caben en el mismo paso de 256 B que ya usaba el
+    // PBR (alineación del offset dinámico), así que no le cuestan nada.
+    shadow_tint: [f32; 4],
+    rim: [f32; 4],
+    style: [f32; 4],
+    outline: [f32; 4],
+}
+
+const _: () = assert!(std::mem::size_of::<ObjectU>() as u64 <= OBJ_STRIDE);
+
+/// Pipeline de color de un dibujo. Los dibujos se ordenan por este valor para
+/// cambiar de pipeline como mucho una vez por modelo y fotograma.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Pipe {
+    /// PBR y sin luz (rama uniforme dentro de `fs_main`).
+    Standard,
+    Toon,
+    Hatching,
+}
+
+fn pipe_of(model: ShadingModel) -> Pipe {
+    match model {
+        ShadingModel::Pbr | ShadingModel::Unlit => Pipe::Standard,
+        ShadingModel::Toon => Pipe::Toon,
+        ShadingModel::Hatching => Pipe::Hatching,
+    }
+}
+
+fn object_uniform(m: &Mat4, mat: &Material) -> ObjectU {
+    let bc = lin3([mat.base_color[0], mat.base_color[1], mat.base_color[2]]);
+    let st = &mat.style;
+    let outline = if mat.shading.has_outline() { st.outline_width.max(0.0) } else { 0.0 };
+    ObjectU {
+        model: m.to_cols_array_2d(),
+        normal_m: m.inverse().transpose().to_cols_array_2d(),
+        base_color: v4(bc, mat.base_color[3]),
+        emissive: v4(lin3(mat.emissive), mat.emissive_strength),
+        params: [mat.metallic, mat.roughness, if mat.shading == ShadingModel::Unlit { 1.0 } else { 0.0 }, st.hatch_scale],
+        shadow_tint: v4(lin3(st.shadow_color), st.bands.clamp(2, 4) as f32),
+        rim: v4(lin3(st.rim_color), st.rim_strength),
+        style: [st.softness, st.specular, st.specular_size, st.rim_width],
+        outline: v4(lin3(st.outline_color), outline),
+    }
 }
 
 /// Cámara para un fotograma.
@@ -96,10 +140,17 @@ pub struct FrameStats {
     pub triangles: u64,
     pub culled: u32,
     pub shadow_casters: u32,
+    /// Cambios de pipeline en el pase de color (sin cielo, rejilla ni selección).
+    pub pipeline_switches: u32,
+    /// Contornos de casco invertido dibujados.
+    pub outlines: u32,
 }
 
 struct GpuMesh {
     vbuf: wgpu::Buffer,
+    /// Normales suavizadas para el contorno de casco invertido (búfer aparte:
+    /// el vértice del PBR no crece).
+    smooth: wgpu::Buffer,
     ibuf: wgpu::Buffer,
     count: u32,
     aabb: Aabb,
@@ -115,6 +166,8 @@ struct Targets {
 
 struct Draw {
     mesh: MeshSource,
+    pipe: Pipe,
+    ink: bool,
     slot: u32,
     shadow: bool,
     visible: bool,
@@ -133,6 +186,9 @@ pub struct SceneRenderer {
     object_bg: wgpu::BindGroup,
     object_capacity: u64,
     opaque: wgpu::RenderPipeline,
+    toon: wgpu::RenderPipeline,
+    hatching: wgpu::RenderPipeline,
+    ink: wgpu::RenderPipeline,
     outline: wgpu::RenderPipeline,
     sky: wgpu::RenderPipeline,
     grid: wgpu::RenderPipeline,
@@ -320,6 +376,55 @@ impl SceneRenderer {
             msaa,
             &color_target(None),
         );
+        let toon = mk(
+            "toon",
+            &main_layout,
+            &main,
+            "vs_main",
+            Some("fs_toon"),
+            &vb,
+            Some(wgpu::Face::Back),
+            depth(true, wgpu::CompareFunction::Less, Default::default()),
+            msaa,
+            &color_target(None),
+        );
+        let hatching = mk(
+            "hatching",
+            &main_layout,
+            &main,
+            "vs_main",
+            Some("fs_hatch"),
+            &vb,
+            Some(wgpu::Face::Back),
+            depth(true, wgpu::CompareFunction::Less, Default::default()),
+            msaa,
+            &color_target(None),
+        );
+        // Casco invertido: posición del búfer de vértices normal + normales suavizadas.
+        let ink_vb = [
+            Some(wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<Vertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &wgpu::vertex_attr_array![0 => Float32x3],
+            }),
+            Some(wgpu::VertexBufferLayout {
+                array_stride: 12,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &wgpu::vertex_attr_array![1 => Float32x3],
+            }),
+        ];
+        let ink = mk(
+            "ink outline",
+            &main_layout,
+            &main,
+            "vs_ink",
+            Some("fs_ink"),
+            &ink_vb,
+            Some(wgpu::Face::Front),
+            depth(true, wgpu::CompareFunction::Less, Default::default()),
+            msaa,
+            &color_target(None),
+        );
         let outline = mk(
             "outline",
             &main_layout,
@@ -370,6 +475,9 @@ impl SceneRenderer {
             object_bg,
             object_capacity,
             opaque,
+            toon,
+            hatching,
+            ink,
             outline,
             sky,
             grid,
@@ -499,19 +607,24 @@ impl SceneRenderer {
             contents: bytemuck::cast_slice(&verts),
             usage: wgpu::BufferUsages::VERTEX,
         });
+        let smooth: Vec<[f32; 3]> = data.smooth_normals().iter().map(|n| n.to_array()).collect();
+        let smooth = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("mesh smooth normals"),
+            contents: bytemuck::cast_slice(&smooth),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
         let ibuf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("mesh indices"),
             contents: bytemuck::cast_slice(&data.indices),
             usage: wgpu::BufferUsages::INDEX,
         });
-        self.meshes.insert(src.clone(), GpuMesh { vbuf, ibuf, count: data.indices.len() as u32, aabb: data.aabb() });
+        self.meshes.insert(src.clone(), GpuMesh { vbuf, smooth, ibuf, count: data.indices.len() as u32, aabb: data.aabb() });
         true
     }
 
     /// Dibuja la escena en la textura de salida y envía los comandos a la GPU.
     pub fn render(&mut self, scene: &Scene, view: &RenderView, opts: &RenderOptions) {
         let Some((w, h)) = self.targets.as_ref().map(|t| t.size) else { return };
-        let _ = (w, h);
         let mut stats = FrameStats::default();
         let view_proj = view.view_proj();
 
@@ -589,6 +702,7 @@ impl SceneRenderer {
             fog: v4(lin3(env.fog_color), env.fog_density),
             params: [points.len() as f32, env.exposure, 0.0, SHADOW_SIZE as f32],
             points: pts,
+            viewport: [w as f32, h as f32, 0.0, 0.0],
         };
         self.queue.write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&globals));
         self.queue.write_buffer(&self.shadow_globals_buf, 0, bytemuck::bytes_of(&light_vp.to_cols_array_2d()));
@@ -615,19 +729,16 @@ impl SceneRenderer {
                 continue;
             }
             let mat = &mr.material;
-            let bc = lin3([mat.base_color[0], mat.base_color[1], mat.base_color[2]]);
-            let obj = ObjectU {
-                model: m.to_cols_array_2d(),
-                normal_m: m.inverse().transpose().to_cols_array_2d(),
-                base_color: v4(bc, mat.base_color[3]),
-                emissive: v4(lin3(mat.emissive), mat.emissive_strength),
-                params: [mat.metallic, mat.roughness, if mat.unlit { 1.0 } else { 0.0 }, 0.0],
-            };
+            let obj = object_uniform(&m, mat);
             let slot = draws.len() as u32;
             bytes.extend_from_slice(bytemuck::bytes_of(&obj));
             bytes.resize((slot as usize + 1) * OBJ_STRIDE as usize, 0);
-            draws.push(Draw { mesh: mr.mesh, slot, shadow: mr.cast_shadows, visible, selected: opts.selected.contains(&id) });
+            let ink = mat.shading.has_outline() && mat.style.outline_width > 0.0;
+            draws.push(Draw { mesh: mr.mesh, pipe: pipe_of(mat.shading), ink, slot, shadow: mr.cast_shadows, visible, selected: opts.selected.contains(&id) });
         }
+        // Orden de dibujo agrupado por pipeline (el slot del uniforme no cambia).
+        let mut order: Vec<usize> = (0..draws.len()).filter(|&i| draws[i].visible).collect();
+        order.sort_by_key(|&i| draws[i].pipe);
         if draws.len() as u64 > self.object_capacity {
             let cap = (draws.len() as u64).next_power_of_two();
             let (b, bg) = Self::make_object_buffer(&self.device, &self.object_bgl, cap);
@@ -690,8 +801,18 @@ impl SceneRenderer {
             pass.set_bind_group(0, &self.globals_bg, &[]);
             pass.set_pipeline(&self.sky);
             pass.draw(0..3, 0..1);
-            pass.set_pipeline(&self.opaque);
-            for d in draws.iter().filter(|d| d.visible) {
+            let mut bound: Option<Pipe> = None;
+            for &i in &order {
+                let d = &draws[i];
+                if bound != Some(d.pipe) {
+                    pass.set_pipeline(match d.pipe {
+                        Pipe::Standard => &self.opaque,
+                        Pipe::Toon => &self.toon,
+                        Pipe::Hatching => &self.hatching,
+                    });
+                    bound = Some(d.pipe);
+                    stats.pipeline_switches += 1;
+                }
                 let m = &self.meshes[&d.mesh];
                 pass.set_bind_group(1, &self.object_bg, &[(d.slot as u64 * OBJ_STRIDE) as u32]);
                 pass.set_vertex_buffer(0, m.vbuf.slice(..));
@@ -699,6 +820,22 @@ impl SceneRenderer {
                 pass.draw_indexed(0..m.count, 0, 0..1);
                 stats.draw_calls += 1;
                 stats.triangles += m.count as u64 / 3;
+            }
+            // Contornos de casco invertido, tras los opacos para aprovechar el early-z.
+            if order.iter().any(|&i| draws[i].ink) {
+                pass.set_pipeline(&self.ink);
+                stats.pipeline_switches += 1;
+                for &i in order.iter().filter(|&&i| draws[i].ink) {
+                    let d = &draws[i];
+                    let m = &self.meshes[&d.mesh];
+                    pass.set_bind_group(1, &self.object_bg, &[(d.slot as u64 * OBJ_STRIDE) as u32]);
+                    pass.set_vertex_buffer(0, m.vbuf.slice(..));
+                    pass.set_vertex_buffer(1, m.smooth.slice(..));
+                    pass.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..m.count, 0, 0..1);
+                    stats.draw_calls += 1;
+                    stats.outlines += 1;
+                }
             }
             if draws.iter().any(|d| d.selected && d.visible) {
                 pass.set_pipeline(&self.outline);
@@ -816,5 +953,50 @@ mod tests {
         let c = at(cube.x as u32, cube.y as u32);
         assert!(c[2] > c[0] + 40, "el cubo es azul: {c:?}");
         assert!(r.stats.draw_calls >= 2 && r.stats.shadow_casters >= 1, "{:?}", r.stats);
+        assert_eq!(r.stats.pipeline_switches, 1, "todo PBR: un solo pipeline");
+        assert_eq!(r.stats.outlines, 0);
+    }
+
+    /// Todos los modelos de sombreado compilan y se dibujan; los dibujos se
+    /// agrupan por pipeline y el contorno toon sale con su color.
+    #[test]
+    fn renders_stylized_models_grouped_by_pipeline() {
+        let Some((device, queue)) = device() else {
+            eprintln!("sin adaptador GPU: test omitido");
+            return;
+        };
+        let mut scene = Scene::starter();
+        let cube = scene.find_by_name("Cubo").unwrap();
+        let mut mr = scene.get::<MeshRenderer>(cube).unwrap();
+        mr.material = Material::toon([0.2, 0.7, 0.3]);
+        mr.material.style.outline_width = 30.0; // ≈ 5 px a 180 p
+        mr.material.style.outline_color = [1.0, 0.0, 0.0];
+        scene.insert(cube, mr);
+        let ground = scene.find_by_name("Suelo").unwrap();
+        let mut mr = scene.get::<MeshRenderer>(ground).unwrap();
+        mr.material.shading = ShadingModel::Hatching;
+        mr.material.style.outline_width = 0.0;
+        scene.insert(ground, mr);
+        // Modelos intercalados: el orden de la escena no debe multiplicar los cambios de pipeline.
+        for (i, model) in [ShadingModel::Unlit, ShadingModel::Toon, ShadingModel::Pbr, ShadingModel::Hatching, ShadingModel::Toon].into_iter().enumerate() {
+            let e = scene.spawn(&format!("Extra {i}"));
+            scene.set_transform(e, Transform::from_translation(Vec3::new(-3.0 + i as f32 * 1.5, 0.5, -3.0)).with_scale(Vec3::splat(0.6)));
+            let mut mr = MeshRenderer::primitive(PrimitiveShape::Sphere);
+            mr.material.shading = model;
+            mr.material.style.outline_width = 0.0;
+            scene.insert(e, mr);
+        }
+        scene.update_transforms();
+        let mut r = SceneRenderer::new(&device, &queue);
+        r.resize(320, 180);
+        let (cam_id, cam) = scene.primary_camera().unwrap();
+        let view = RenderView::from_camera(scene.global(cam_id), &cam, 320.0 / 180.0);
+        r.render(&scene, &view, &RenderOptions { shadows: true, ..Default::default() });
+        // Standard, toon, plumilla y el pase de contorno.
+        assert_eq!(r.stats.pipeline_switches, 4, "{:?}", r.stats);
+        assert_eq!(r.stats.outlines, 1, "{:?}", r.stats);
+        let (_, _, px) = r.read_pixels().unwrap();
+        let red = px.chunks(4).filter(|p| p[0] > 180 && p[1] < 60 && p[2] < 60).count();
+        assert!(red > 30, "el contorno rojo debe verse: {red} píxeles");
     }
 }

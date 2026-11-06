@@ -143,8 +143,105 @@ pub enum MeshSource {
     Model(String),
 }
 
-/// Material PBR metal-rugosidad (el modelo de Unreal, Unity HDRP y Godot).
+/// Modelo de sombreado de un material (como los *shading models* de Unreal o
+/// los `render_mode` de Godot). Cada uno es un pipeline propio en el
+/// renderizador; los dibujos se agrupan por modelo.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum ShadingModel {
+    /// PBR metal-rugosidad (GGX).
+    #[default]
+    Pbr,
+    /// Cel / toon: bandas de luz duras, sombra tintada, borde y contorno.
+    Toon,
+    /// Color plano sin iluminación.
+    Unlit,
+    /// Rayado a plumilla en pantalla: más trazos cuanto más oscuro.
+    Hatching,
+}
+
+impl ShadingModel {
+    pub const ALL: [ShadingModel; 4] = [ShadingModel::Pbr, ShadingModel::Toon, ShadingModel::Unlit, ShadingModel::Hatching];
+    pub fn label(self) -> &'static str {
+        match self {
+            ShadingModel::Pbr => "PBR",
+            ShadingModel::Toon => "Toon (cel)",
+            ShadingModel::Unlit => "Sin luz",
+            ShadingModel::Hatching => "Plumilla",
+        }
+    }
+    /// Código estable de la API de scripts (`maker_api::Shading`).
+    pub fn to_api(self) -> u32 {
+        match self {
+            ShadingModel::Pbr => 0,
+            ShadingModel::Toon => 1,
+            ShadingModel::Unlit => 2,
+            ShadingModel::Hatching => 3,
+        }
+    }
+    pub fn from_api(code: u32) -> Option<Self> {
+        Some(match code {
+            0 => ShadingModel::Pbr,
+            1 => ShadingModel::Toon,
+            2 => ShadingModel::Unlit,
+            3 => ShadingModel::Hatching,
+            _ => return None,
+        })
+    }
+    /// ¿Admite contorno de casco invertido?
+    pub fn has_outline(self) -> bool {
+        matches!(self, ShadingModel::Toon | ShadingModel::Hatching)
+    }
+}
+
+/// Parámetros de los modelos estilizados (toon y plumilla). El PBR los ignora.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StyleParams {
+    /// Nº de bandas de luz (2–4), sombra incluida.
+    pub bands: u32,
+    /// Ancho del borde entre bandas (0 = corte duro).
+    pub softness: f32,
+    /// Tinte de la zona en sombra, sRGB (multiplica el color base).
+    pub shadow_color: [f32; 3],
+    /// Fuerza del brillo especular en banda (0 = sin brillo).
+    pub specular: f32,
+    /// Tamaño del brillo especular (0–1).
+    pub specular_size: f32,
+    /// Luz de borde (fresnel), sRGB.
+    pub rim_color: [f32; 3],
+    pub rim_strength: f32,
+    /// Ancho del borde (0–1).
+    pub rim_width: f32,
+    /// Contorno en píxeles (a 1080 p); 0 = sin contorno.
+    pub outline_width: f32,
+    /// Color del contorno (y de la tinta en plumilla), sRGB.
+    pub outline_color: [f32; 3],
+    /// Separación entre trazos de plumilla en píxeles (a 1080 p).
+    pub hatch_scale: f32,
+}
+
+impl Default for StyleParams {
+    fn default() -> Self {
+        Self {
+            bands: 2,
+            softness: 0.04,
+            shadow_color: [0.66, 0.68, 0.85],
+            specular: 0.0,
+            specular_size: 0.3,
+            rim_color: [1.0, 1.0, 1.0],
+            rim_strength: 0.6,
+            rim_width: 0.25,
+            outline_width: 3.0,
+            outline_color: [0.1, 0.09, 0.14],
+            hatch_scale: 7.0,
+        }
+    }
+}
+
+/// Material: color, PBR metal-rugosidad (el modelo de Unreal, Unity HDRP y
+/// Godot) y modelo de sombreado.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "MaterialFile")]
 pub struct Material {
     /// Color base en sRGB (como lo ve el usuario) + alfa.
     pub base_color: [f32; 4],
@@ -153,20 +250,61 @@ pub struct Material {
     /// Emisión en sRGB.
     pub emissive: [f32; 3],
     pub emissive_strength: f32,
-    /// Sin iluminación.
+    pub shading: ShadingModel,
+    pub style: StyleParams,
+}
+
+/// Forma en disco: acepta escenas antiguas (`unlit: true`, sin `shading`).
+#[derive(Deserialize)]
+struct MaterialFile {
+    base_color: [f32; 4],
+    metallic: f32,
+    roughness: f32,
+    emissive: [f32; 3],
+    emissive_strength: f32,
     #[serde(default)]
-    pub unlit: bool,
+    unlit: bool,
+    #[serde(default)]
+    shading: ShadingModel,
+    #[serde(default)]
+    style: StyleParams,
+}
+
+impl From<MaterialFile> for Material {
+    fn from(f: MaterialFile) -> Self {
+        Self {
+            base_color: f.base_color,
+            metallic: f.metallic,
+            roughness: f.roughness,
+            emissive: f.emissive,
+            emissive_strength: f.emissive_strength,
+            shading: if f.unlit { ShadingModel::Unlit } else { f.shading },
+            style: f.style,
+        }
+    }
 }
 
 impl Default for Material {
     fn default() -> Self {
-        Self { base_color: [0.8, 0.8, 0.82, 1.0], metallic: 0.0, roughness: 0.55, emissive: [0.0; 3], emissive_strength: 0.0, unlit: false }
+        Self {
+            base_color: [0.8, 0.8, 0.82, 1.0],
+            metallic: 0.0,
+            roughness: 0.55,
+            emissive: [0.0; 3],
+            emissive_strength: 0.0,
+            shading: ShadingModel::Pbr,
+            style: StyleParams::default(),
+        }
     }
 }
 
 impl Material {
     pub fn color(c: [f32; 3]) -> Self {
         Self { base_color: [c[0], c[1], c[2], 1.0], ..Default::default() }
+    }
+    /// Material toon con los parámetros por defecto.
+    pub fn toon(c: [f32; 3]) -> Self {
+        Self { shading: ShadingModel::Toon, ..Self::color(c) }
     }
 }
 
@@ -350,3 +488,53 @@ fn yes() -> bool {
 /// Lista de scripts de la entidad (varios por entidad, como en Unity).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub struct Scripts(pub Vec<ScriptSlot>);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Un material de una escena anterior a los modelos de sombreado.
+    const LEGACY: &str = r#"{"base_color":[0.1,0.2,0.3,1.0],"metallic":0.5,"roughness":0.4,"emissive":[0.0,0.0,0.0],"emissive_strength":0.0}"#;
+
+    #[test]
+    fn legacy_material_loads_as_pbr() {
+        let m: Material = serde_json::from_str(LEGACY).unwrap();
+        assert_eq!(m.shading, ShadingModel::Pbr);
+        assert_eq!(m.style, StyleParams::default());
+        assert_eq!(m.metallic, 0.5);
+    }
+
+    #[test]
+    fn legacy_unlit_flag_becomes_unlit_model() {
+        let s = LEGACY.replace("}", r#","unlit":true}"#);
+        let m: Material = serde_json::from_str(&s).unwrap();
+        assert_eq!(m.shading, ShadingModel::Unlit);
+    }
+
+    #[test]
+    fn toon_material_round_trips() {
+        let mut m = Material::toon([0.2, 0.6, 0.3]);
+        m.style.bands = 3;
+        m.style.outline_width = 3.5;
+        m.style.rim_color = [1.0, 0.9, 0.7];
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(!json.contains("unlit"));
+        let back: Material = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, m);
+        // Campos de estilo ausentes toman su valor por defecto.
+        let partial = LEGACY.replace("}", r#","shading":"Toon","style":{"bands":3}}"#);
+        let p: Material = serde_json::from_str(&partial).unwrap();
+        assert_eq!(p.shading, ShadingModel::Toon);
+        assert_eq!(p.style.bands, 3);
+        assert_eq!(p.style.outline_width, StyleParams::default().outline_width);
+    }
+
+    #[test]
+    fn shading_api_codes_are_stable() {
+        for m in ShadingModel::ALL {
+            assert_eq!(ShadingModel::from_api(m.to_api()), Some(m));
+        }
+        assert_eq!(ShadingModel::from_api(1), Some(ShadingModel::Toon));
+        assert_eq!(ShadingModel::from_api(99), None);
+    }
+}

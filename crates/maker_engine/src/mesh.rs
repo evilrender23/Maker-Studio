@@ -52,6 +52,35 @@ pub struct MeshData {
 }
 
 impl MeshData {
+    /// Normales promediadas entre vértices que comparten posición (las aristas
+    /// duras quedan unidas). Las usa el contorno de casco invertido para que
+    /// el casco no se abra en las esquinas.
+    pub fn smooth_normals(&self) -> Vec<Vec3> {
+        use std::collections::HashMap;
+        let key = |p: Vec3| {
+            let q = (p * 1.0e4).round();
+            (q.x as i64, q.y as i64, q.z as i64)
+        };
+        let mut sums: HashMap<(i64, i64, i64), Vec<Vec3>> = HashMap::new();
+        for (i, p) in self.positions.iter().enumerate() {
+            let n = self.normals.get(i).copied().unwrap_or(Vec3::Y);
+            let list = sums.entry(key(*p)).or_default();
+            // Cada dirección cuenta una vez (las costuras repiten normales).
+            if !list.iter().any(|m| m.dot(n) > 0.999) {
+                list.push(n);
+            }
+        }
+        self.positions
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let own = self.normals.get(i).copied().unwrap_or(Vec3::Y);
+                let s: Vec3 = sums[&key(*p)].iter().copied().sum();
+                s.try_normalize().unwrap_or(own)
+            })
+            .collect()
+    }
+
     pub fn aabb(&self) -> Aabb {
         let mut b = Aabb::EMPTY;
         for p in &self.positions {
@@ -298,6 +327,23 @@ fn torus(big_r: f32, small_r: f32, seg: u32, sides: u32) -> MeshData {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn smooth_normals_join_hard_edges() {
+        let cube = MeshData::primitive(PrimitiveShape::Cube);
+        let sn = cube.smooth_normals();
+        assert_eq!(sn.len(), cube.positions.len());
+        for (p, n) in cube.positions.iter().zip(&sn) {
+            // En un cubo unidad la normal suavizada de cada esquina apunta hacia fuera en diagonal.
+            assert!((n.length() - 1.0).abs() < 1e-4);
+            assert!((*n - p.normalize()).length() < 1e-3, "{p:?} -> {n:?}");
+        }
+        // En la esfera ya eran suaves: no cambian.
+        let sphere = MeshData::primitive(PrimitiveShape::Sphere);
+        for (a, b) in sphere.smooth_normals().iter().zip(&sphere.normals) {
+            assert!(a.dot(*b) > 0.99);
+        }
+    }
 
     fn base64(data: &[u8]) -> String {
         const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

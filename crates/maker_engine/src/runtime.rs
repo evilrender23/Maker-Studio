@@ -238,6 +238,7 @@ fn host_api(ctx: &mut HostCtx) -> HostApi {
         raycast: h_raycast,
         set_color: h_set_color,
         exists: h_exists,
+        set_shading: h_set_shading,
     }
 }
 
@@ -375,6 +376,16 @@ unsafe extern "C" fn h_set_color(c: *mut c_void, e: Entity, rgba: maker_api::Rgb
         m.material.base_color = [rgba.r, rgba.g, rgba.b, rgba.a];
     }
 }
+unsafe extern "C" fn h_set_shading(c: *mut c_void, e: Entity, code: u32) {
+    let c = unsafe { cx(c) };
+    let Some(model) = ShadingModel::from_api(code) else {
+        log::warn("script", format!("set_shading: modelo desconocido {code}"));
+        return;
+    };
+    if let Some(mut m) = c.scene.get_mut::<MeshRenderer>(id(e)) {
+        m.material.shading = model;
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -418,7 +429,28 @@ mod tests {
         }
     }
 
-    maker_api::script_library!(TEST_LIB; Spinner, Spawner, Panicker);
+    #[derive(Default)]
+    struct Toonify;
+    impl Script for Toonify {
+        fn start(&mut self, ctx: &mut Ctx) {
+            let me = ctx.entity;
+            ctx.set_shading(me, Shading::Toon);
+        }
+    }
+
+    maker_api::script_library!(TEST_LIB; Spinner, Spawner, Panicker, Toonify);
+
+    #[test]
+    fn scripts_can_change_shading_model() {
+        let lib = Arc::new(ScriptLib::from_static(&TEST_LIB).unwrap());
+        let mut s = Scene::starter();
+        let cube = s.find_by_name("Cubo").unwrap();
+        assert_eq!(s.get::<MeshRenderer>(cube).unwrap().material.shading, ShadingModel::Pbr);
+        s.insert(cube, Scripts(vec![ScriptSlot { name: "Toonify".into(), enabled: true, ..Default::default() }]));
+        let mut rt = Runtime::start(&mut s, Some(lib));
+        rt.tick(&mut s, &Input::default(), 1.0 / 60.0);
+        assert_eq!(s.get::<MeshRenderer>(cube).unwrap().material.shading, ShadingModel::Toon);
+    }
 
     #[test]
     fn scripts_run_props_apply_spawn_and_destroy() {

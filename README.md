@@ -33,6 +33,10 @@ scripts de cada juego.
 - **Render** (`maker_render`, wgpu → Vulkan/Metal/DX12/GL): PBR metal-rugosidad,
   sol con sombras PCF, 16 luces puntuales, cielo procedural, niebla, ACES,
   MSAA 4×, frustum culling, contorno de selección, rejilla infinita.
+- **Modelos de sombreado** por material: PBR, **toon / cel** al estilo de
+  *Breath of the Wild* (bandas duras, sombra tintada, luz de borde, brillo en
+  banda y contorno de casco invertido), sin luz y plumilla (rayado a tinta).
+  Ver [docs/SHADERS.md](docs/SHADERS.md).
 - **Scripting en Rust** (`maker_api`): cada proyecto tiene un crate `scripts/`
   que el editor compila (F7) y recarga en caliente; propiedades editables desde
   el Inspector; los pánicos se atrapan y salen en la consola. Ver

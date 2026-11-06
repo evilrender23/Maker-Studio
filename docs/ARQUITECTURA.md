@@ -24,6 +24,7 @@ Maker Studio es un workspace de Cargo con cinco crates:
 | Play en el editor con restauración al parar | Unity, Unreal PIE | Instantánea de la escena al pulsar Play; Stop la restaura. Los cambios hechos jugando se descartan, como en Unity. |
 | Recarga en caliente de código | Unreal Live Coding, Godot | Scripts en `cdylib` recargados al compilar; frontera C-ABI estable. |
 | Materiales PBR metal-rugosidad | Unreal, Unity HDRP/URP, Godot | GGX + Smith + Schlick, ambiente hemisférico, reflejo aproximado del cielo, tonemap ACES. |
+| Modelo de sombreado por material | Unreal (*shading models*), Godot (`render_mode`) | `Material::shading`: PBR, toon, sin luz o plumilla; un pipeline por modelo. |
 | Lanzar el juego aparte del editor | Unreal "Standalone Game" | Archivo → Ejecutar en ventana aparte (`maker-player`). |
 | Exportar el juego | los tres | Archivo → Exportar juego: reproductor + escenas + assets + biblioteca de scripts en `export/<nombre>/`. |
 | Project Hub | Unity Hub, gestor de proyectos de Godot | Pantalla inicial con recientes, nuevo (demo o básico) y abrir. |
@@ -46,12 +47,27 @@ Maker Studio es un workspace de Cargo con cinco crates:
 ## Renderizador
 
 Pasadas por fotograma: sombras (profundidad desde el sol) → cielo (triángulo a
-pantalla completa) → opacos PBR → contorno de selección (casco invertido) →
-rejilla infinita del editor (con desvanecimiento). Todo se dibuja en una
-textura fuera de pantalla `Rgba8UnormSrgb` (MSAA resuelto) que el editor
-registra en egui y el reproductor pinta a pantalla completa.
-`crates/maker_render/src/renderer.rs` tiene un test que renderiza la escena
-inicial sin ventana y comprueba píxeles.
+pantalla completa) → opacos agrupados por pipeline (PBR y sin luz → toon →
+plumilla) → contornos de casco invertido de los materiales toon y plumilla →
+contorno de selección → rejilla infinita del editor (con desvanecimiento).
+Todo se dibuja en una textura fuera de pantalla `Rgba8UnormSrgb` (MSAA
+resuelto) que el editor registra en egui y el reproductor pinta a pantalla
+completa.
+
+Cada modelo de sombreado (`ShadingModel`) es un *entry point* de fragmento
+propio en `shaders.wgsl` (`fs_main`, `fs_toon`, `fs_hatch`), así el PBR no
+paga ramas ni registros de los demás. Los dibujos se ordenan por pipeline, de
+modo que hay como mucho un cambio por modelo y fotograma
+(`FrameStats::pipeline_switches`). Los parámetros estilizados viven en el
+mismo uniforme por objeto: caben en el paso de 256 B que ya imponía la
+alineación del *offset* dinámico, así que el PBR no crece. El contorno usa
+normales suavizadas (promediadas por posición) en un búfer de vértices aparte,
+para que el casco no se abra en las aristas duras sin engordar el vértice
+del PBR. Detalles de cada modelo en [SHADERS.md](SHADERS.md).
+
+`crates/maker_render/src/renderer.rs` tiene tests que renderizan sin ventana y
+comprueban píxeles: la escena inicial en PBR y una escena con todos los
+modelos intercalados (agrupación por pipeline y color del contorno).
 
 ## Tema
 
@@ -70,7 +86,7 @@ cargo test --release -p maker_engine --test hot_reload -- --ignored   # compila 
 
 Cubren: ABI de propiedades, cuaterniones, escena (JSON ida y vuelta,
 jerarquía, duplicar, reordenar), mallas (normales hacia fuera), rayos y
-proyección, entrada, física (caída y reposo, raycast), scripts (props,
-spawn, destroy, pánico atrapado), proyectos, cámara del editor, gizmos
+proyección, materiales (escenas antiguas, `unlit`, ida y vuelta), normales suavizadas, entrada, física (caída y reposo, raycast), scripts (props,
+spawn, destroy, pánico atrapado, `set_shading`), proyectos, cámara del editor, gizmos
 (arrastre, ajuste, anillo de rotación), resaltado de Rust, deshacer/rehacer,
 render sin ventana y recarga en caliente de punta a punta.

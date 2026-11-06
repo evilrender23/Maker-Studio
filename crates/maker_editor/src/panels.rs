@@ -524,24 +524,7 @@ fn mesh_renderer(ed: &mut Editor, ui: &mut Ui, id: EntityId) {
             }
         });
         ui.end_row();
-        ui.label("Color base");
-        color4(ui, &mut mr.material.base_color);
-        ui.end_row();
-        ui.label("Metálico");
-        ui.add(egui::Slider::new(&mut mr.material.metallic, 0.0..=1.0));
-        ui.end_row();
-        ui.label("Rugosidad");
-        ui.add(egui::Slider::new(&mut mr.material.roughness, 0.0..=1.0));
-        ui.end_row();
-        ui.label("Emisión");
-        ui.horizontal(|ui| {
-            color3(ui, &mut mr.material.emissive);
-            ui.add(egui::DragValue::new(&mut mr.material.emissive_strength).speed(0.05).range(0.0..=100.0).prefix("× "));
-        });
-        ui.end_row();
-        ui.label("Sin luz");
-        ui.checkbox(&mut mr.material.unlit, "");
-        ui.end_row();
+        material_fields(ui, &mut mr.material);
         ui.label("Proyecta sombras");
         ui.checkbox(&mut mr.cast_shadows, "");
         ui.end_row();
@@ -551,6 +534,84 @@ fn mesh_renderer(ed: &mut Editor, ui: &mut Ui, id: EntityId) {
         ed.pending_edit = Some("Editar malla".into());
     }
     ui.separator();
+}
+
+/// Campos del material dentro de la rejilla del inspector: el modelo de
+/// sombreado y solo los parámetros que ese modelo usa.
+fn material_fields(ui: &mut Ui, m: &mut Material) {
+    ui.label("Sombreado");
+    egui::ComboBox::from_id_salt("mat-shading").selected_text(m.shading.label()).width(170.0).show_ui(ui, |ui| {
+        for s in ShadingModel::ALL {
+            ui.selectable_value(&mut m.shading, s, s.label());
+        }
+    });
+    ui.end_row();
+    ui.label(if m.shading == ShadingModel::Hatching { "Papel" } else { "Color base" });
+    color4(ui, &mut m.base_color);
+    ui.end_row();
+    let st = &mut m.style;
+    match m.shading {
+        ShadingModel::Pbr => {
+            ui.label("Metálico");
+            ui.add(egui::Slider::new(&mut m.metallic, 0.0..=1.0));
+            ui.end_row();
+            ui.label("Rugosidad");
+            ui.add(egui::Slider::new(&mut m.roughness, 0.0..=1.0));
+            ui.end_row();
+        }
+        ShadingModel::Toon => {
+            ui.label("Bandas");
+            ui.add(egui::Slider::new(&mut st.bands, 2..=4));
+            ui.end_row();
+            ui.label("Suavidad");
+            ui.add(egui::Slider::new(&mut st.softness, 0.0..=0.5));
+            ui.end_row();
+            ui.label("Sombra");
+            color3(ui, &mut st.shadow_color);
+            ui.end_row();
+            ui.label("Brillo");
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut st.specular).speed(0.01).range(0.0..=4.0).prefix("× "));
+                ui.add(egui::Slider::new(&mut st.specular_size, 0.0..=1.0).show_value(false)).on_hover_text("Tamaño");
+            });
+            ui.end_row();
+            ui.label("Borde");
+            ui.horizontal(|ui| {
+                color3(ui, &mut st.rim_color);
+                ui.add(egui::DragValue::new(&mut st.rim_strength).speed(0.01).range(0.0..=4.0).prefix("× "));
+                ui.add(egui::Slider::new(&mut st.rim_width, 0.0..=1.0).show_value(false)).on_hover_text("Ancho");
+            });
+            ui.end_row();
+        }
+        ShadingModel::Hatching => {
+            ui.label("Tinta");
+            color3(ui, &mut st.outline_color);
+            ui.end_row();
+            ui.label("Separación");
+            ui.add(egui::Slider::new(&mut st.hatch_scale, 3.0..=24.0).suffix(" px"));
+            ui.end_row();
+            ui.label("Suavidad");
+            ui.add(egui::Slider::new(&mut st.softness, 0.0..=0.5));
+            ui.end_row();
+        }
+        ShadingModel::Unlit => {}
+    }
+    if m.shading.has_outline() {
+        ui.label("Contorno");
+        ui.horizontal(|ui| {
+            if m.shading == ShadingModel::Toon {
+                color3(ui, &mut st.outline_color);
+            }
+            ui.add(egui::DragValue::new(&mut st.outline_width).speed(0.05).range(0.0..=20.0).suffix(" px"));
+        });
+        ui.end_row();
+    }
+    ui.label("Emisión");
+    ui.horizontal(|ui| {
+        color3(ui, &mut m.emissive);
+        ui.add(egui::DragValue::new(&mut m.emissive_strength).speed(0.05).range(0.0..=100.0).prefix("× "));
+    });
+    ui.end_row();
 }
 
 fn light(ed: &mut Editor, ui: &mut Ui, id: EntityId) {

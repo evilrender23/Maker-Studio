@@ -186,16 +186,26 @@ pub fn walk(dir: &Path, f: &mut dyn FnMut(&Path)) {
 }
 
 /// Escena de demostración: personaje físico, pila de cajas, luz que flota,
-/// toro que gira y cámara que sigue al jugador.
+/// toro que gira y cámara que sigue al jugador. Mezcla modelos de sombreado:
+/// suelo, jugador y cajas en toon, la esfera a plumilla y el anillo y el orbe en PBR.
 pub fn demo_scene() -> Scene {
     let mut s = Scene::starter();
     let cube = s.find_by_name("Cubo").unwrap();
     s.despawn_recursive(cube);
+    if let Some(ground) = s.find_by_name("Suelo")
+        && let Some(mut mr) = s.get::<MeshRenderer>(ground)
+    {
+        mr.material.shading = ShadingModel::Toon;
+        mr.material.style.outline_width = 0.0;
+        mr.material.style.rim_strength = 0.0;
+        s.insert(ground, mr);
+    }
 
     let player = s.spawn("Jugador");
     s.set_transform(player, Transform::from_translation(Vec3::new(0.0, 1.5, 3.0)));
     let mut mr = MeshRenderer::primitive(PrimitiveShape::Capsule);
-    mr.material = Material { base_color: [0.0, 0.33, 0.99, 1.0], roughness: 0.35, ..Default::default() };
+    mr.material = Material { base_color: [0.0, 0.33, 0.99, 1.0], roughness: 0.35, ..Material::toon([0.0; 3]) };
+    mr.material.style.specular = 0.5;
     s.insert(player, mr);
     s.insert(player, RigidBody { lock_rotation: true, ..RigidBody::dynamic() });
     s.insert(player, Collider { friction: 0.0, ..Collider::new(ColliderShape::fit(PrimitiveShape::Capsule)) });
@@ -212,7 +222,7 @@ pub fn demo_scene() -> Scene {
             let x = -3.0 + col as f32 * 1.02 + row as f32 * 0.51;
             s.set_transform(c, Transform::from_translation(Vec3::new(x, 0.5 + row as f32 * 1.0, -2.0)));
             let mut mr = MeshRenderer::primitive(PrimitiveShape::Cube);
-            mr.material = Material::color(colors[(i as usize) % colors.len()]);
+            mr.material = Material::toon(colors[(i as usize) % colors.len()]);
             s.insert(c, mr);
             s.insert(c, RigidBody::dynamic());
             s.insert(c, Collider::new(ColliderShape::fit(PrimitiveShape::Cube)));
@@ -241,7 +251,8 @@ pub fn demo_scene() -> Scene {
     let sphere = s.spawn("Esfera");
     s.set_transform(sphere, Transform::from_translation(Vec3::new(2.0, 0.75, 1.0)).with_scale(Vec3::splat(1.5)));
     let mut mr = MeshRenderer::primitive(PrimitiveShape::Sphere);
-    mr.material = Material { base_color: [0.9, 0.9, 0.92, 1.0], metallic: 0.0, roughness: 0.15, ..Default::default() };
+    mr.material = Material { base_color: [0.96, 0.94, 0.88, 1.0], shading: ShadingModel::Hatching, ..Default::default() };
+    mr.material.style.outline_color = [0.12, 0.13, 0.22];
     s.insert(sphere, mr);
     s.insert(sphere, RigidBody::dynamic());
     s.insert(sphere, Collider { restitution: 0.6, ..Collider::new(ColliderShape::fit(PrimitiveShape::Sphere)) });
@@ -374,6 +385,7 @@ impl Script for PlayerController {
         if ctx.key_pressed(Key::F) {
             let ball = ctx.spawn(Primitive::Sphere, pos + Vec3::new(0.0, 0.5, -1.2), spawn_flags::DYNAMIC_BODY);
             ctx.set_color(ball, [1.0, 0.4, 0.2, 1.0]);
+            ctx.set_shading(ball, Shading::Toon);
             ctx.apply_impulse_to(ball, Vec3::new(0.0, 2.0, -12.0));
         }
         if pos.y < -20.0 {
@@ -441,7 +453,10 @@ mod tests {
         assert_eq!(p2.file, p.file);
         assert_eq!(p2.scripts_crate_name(), "prueba_scripts");
         let scene = Scene::load(&p2.main_scene_path()).unwrap();
-        assert!(scene.find_by_name("Jugador").is_some());
+        let player = scene.find_by_name("Jugador").unwrap();
+        assert_eq!(scene.get::<MeshRenderer>(player).unwrap().material.shading, ShadingModel::Toon);
+        let sphere = scene.find_by_name("Esfera").unwrap();
+        assert_eq!(scene.get::<MeshRenderer>(sphere).unwrap().material.shading, ShadingModel::Hatching);
         assert_eq!(p2.scenes(), vec!["scenes/main.mscene".to_string()]);
         let _ = std::fs::remove_dir_all(&dir);
     }

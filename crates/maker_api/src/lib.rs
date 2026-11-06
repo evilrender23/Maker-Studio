@@ -209,6 +209,20 @@ pub enum Primitive {
     Capsule = 5,
 }
 
+/// Modelo de sombreado de un material (ver `Ctx::set_shading`).
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shading {
+    /// PBR metal-rugosidad (por defecto).
+    Pbr = 0,
+    /// Cel / toon: bandas duras, sombra tintada, borde y contorno.
+    Toon = 1,
+    /// Color plano sin luz.
+    Unlit = 2,
+    /// Rayado a plumilla.
+    Hatching = 3,
+}
+
 /// Opciones de `spawn`.
 pub mod spawn_flags {
     /// Añade cuerpo rígido dinámico y colisionador ajustado a la forma.
@@ -282,6 +296,8 @@ pub struct HostApi {
     pub raycast: unsafe extern "C" fn(*mut c_void, Vec3, Vec3, f32, *mut RayHit) -> bool,
     pub set_color: unsafe extern "C" fn(*mut c_void, Entity, Rgba),
     pub exists: unsafe extern "C" fn(*mut c_void, Entity) -> bool,
+    // Añadir solo al final: el orden de los campos es parte de la ABI.
+    pub set_shading: unsafe extern "C" fn(*mut c_void, Entity, u32),
 }
 
 /// Tipos de propiedad exportada (como `[SerializeField]` / `@export`).
@@ -478,6 +494,10 @@ impl<'a> Ctx<'a> {
     pub fn set_color(&mut self, e: Entity, rgba: [f32; 4]) {
         let c = Rgba { r: rgba[0], g: rgba[1], b: rgba[2], a: rgba[3] };
         unsafe { (self.api.set_color)(self.api.ctx, e, c) }
+    }
+    /// Cambia el modelo de sombreado del material de `e` (toon, PBR…).
+    pub fn set_shading(&mut self, e: Entity, shading: Shading) {
+        unsafe { (self.api.set_shading)(self.api.ctx, e, shading as u32) }
     }
     pub fn spawn(&mut self, shape: Primitive, at: Vec3, flags: u32) -> Entity {
         unsafe { (self.api.spawn)(self.api.ctx, shape as u32, at, flags) }
@@ -703,7 +723,7 @@ macro_rules! export_scripts {
 }
 
 pub mod prelude {
-    pub use crate::{Ctx, Entity, Key, MouseButton, Primitive, Props, Quat, RayHit, Script, Vec2, Vec3, export_scripts, spawn_flags};
+    pub use crate::{Ctx, Entity, Key, MouseButton, Primitive, Props, Quat, RayHit, Script, Shading, Vec2, Vec3, export_scripts, spawn_flags};
 }
 
 #[cfg(test)]

@@ -832,7 +832,7 @@ mod tests {
         rt.tick(&mut s, &Input::default(), 1.0 / 60.0);
         let a = s.get::<Animator>(cube).unwrap();
         assert_eq!((a.clip.as_str(), a.speed, a.playing), ("Dance_Loop", 1.5, true));
-        assert_eq!(a.state.from.as_ref().map(|f| f.0.as_str()), Some("Idle_Loop"));
+        assert_eq!(a.state.salientes.first().map(|f| f.clip.as_str()), Some("Idle_Loop"));
     }
 
     #[test]

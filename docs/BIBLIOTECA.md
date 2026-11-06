@@ -73,6 +73,13 @@ ctx.play_animation(me, "Walk_Loop", 0.3);   // fundido de 0,3 s
 ctx.set_animation_speed(me, 1.5);
 ```
 
+Los cambios de clip siempre se funden: con el tiempo que pase el script, o con la
+**Transición** del Animador (0,25 s por defecto) si el clip se cambia desde el
+inspector. Un cambio a mitad de otro fundido parte de la mezcla que se ve en ese
+momento, y volver a un clip que aún se desvanece lo retoma en su tiempo, así que no
+hay saltos. El fundido va en tiempo real, sin depender de la velocidad del clip.
+`0` es un corte.
+
 La demo (`maker-studio --new-demo`) incluye la escena
 `scenes/biblioteca.mscene` con una esquina de casa medieval, vegetación,
 accesorios en toon, un explorador que pasea (script `Paseante`) y una maniquí

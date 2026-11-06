@@ -91,6 +91,10 @@ pub fn animator(ed: &mut Editor, ui: &mut Ui, id: EntityId) {
         ui.label("En el sitio");
         ui.checkbox(&mut a.in_place, "");
         ui.end_row();
+        ui.label("Transición");
+        ui.add(egui::DragValue::new(&mut a.transicion).speed(0.01).range(0.0..=3.0).suffix(" s"))
+            .on_hover_text("Fundido al cambiar de clip (0 = corte)");
+        ui.end_row();
     });
     if !clips.is_empty() && !a.clip.is_empty() && !clips.contains(&a.clip) {
         ui.label(RichText::new(format!("No existe «{}» en estos clips", a.clip)).small().color(theme::YELLOW));

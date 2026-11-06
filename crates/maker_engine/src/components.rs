@@ -464,6 +464,8 @@ pub struct Animator {
     pub playing: bool,
     /// Ignora el desplazamiento del hueso raíz (clips `_RM` en el sitio).
     pub in_place: bool,
+    /// Segundos de fundido al cambiar de clip sin indicar uno (inspector, `clip` cambiado a mano).
+    pub transicion: f32,
     /// Estado de reproducción (no se guarda).
     #[serde(skip)]
     pub state: AnimatorState,
@@ -473,24 +475,49 @@ pub struct Animator {
 #[derive(Clone, Debug, Default)]
 pub struct AnimatorState {
     pub time: f32,
-    /// Clip anterior durante un fundido: (nombre, tiempo).
-    pub from: Option<(String, f32)>,
+    /// Clips que se están desvaneciendo. Sus pesos suman 1 y reparten `1 - peso del actual`;
+    /// así un cambio a mitad de un fundido parte de la mezcla que se veía, sin saltos.
+    pub salientes: Vec<Saliente>,
+    /// Duración del fundido en curso (s).
     pub fade: f32,
-    pub fade_left: f32,
-    /// Clip con el que se calculó `time` (para reiniciar al cambiarlo).
+    /// Progreso del fundido, 0..1 (1 = solo el clip actual).
+    pub mezcla: f32,
+    /// Clip con el que se calculó `time` (para detectar cambios).
     pub current: String,
+}
+
+/// Un clip que se desvanece durante un fundido.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Saliente {
+    pub clip: String,
+    pub time: f32,
+    pub peso: f32,
+}
+
+/// Máximo de clips desvaneciéndose a la vez (los de menos peso se descartan).
+pub const MAX_SALIENTES: usize = 4;
+
+impl AnimatorState {
+    /// Peso del clip actual con curva suave (sin tirones al empezar ni al acabar).
+    pub fn peso_actual(&self) -> f32 {
+        if self.salientes.is_empty() {
+            return 1.0;
+        }
+        let x = self.mezcla.clamp(0.0, 1.0);
+        x * x * (3.0 - 2.0 * x)
+    }
 }
 
 impl PartialEq for Animator {
     /// El estado de reproducción no cuenta (no es parte de la escena).
     fn eq(&self, o: &Self) -> bool {
-        self.source == o.source && self.clip == o.clip && self.speed == o.speed && self.looping == o.looping && self.playing == o.playing && self.in_place == o.in_place
+        self.source == o.source && self.clip == o.clip && self.speed == o.speed && self.looping == o.looping && self.playing == o.playing && self.in_place == o.in_place && self.transicion == o.transicion
     }
 }
 
 impl Default for Animator {
     fn default() -> Self {
-        Self { source: String::new(), clip: String::new(), speed: 1.0, looping: true, playing: true, in_place: true, state: AnimatorState::default() }
+        Self { source: String::new(), clip: String::new(), speed: 1.0, looping: true, playing: true, in_place: true, transicion: 0.25, state: AnimatorState::default() }
     }
 }
 
@@ -498,22 +525,42 @@ impl Animator {
     pub fn new(source: &str, clip: &str) -> Self {
         Self { source: source.into(), clip: clip.into(), ..Default::default() }
     }
-    /// Cambia de clip con un fundido de `fade` segundos.
+    /// Cambia de clip con un fundido de `fade` segundos (0 = corte).
     pub fn play(&mut self, clip: &str, fade: f32) {
-        if self.clip != clip || !self.playing {
-            if fade > 0.0 && !self.state.current.is_empty() {
-                self.state.from = Some((self.state.current.clone(), self.state.time));
-                self.state.fade = fade;
-                self.state.fade_left = fade;
-            } else {
-                self.state.from = None;
-                self.state.fade_left = 0.0;
-            }
+        if self.clip != clip || self.state.current != clip {
             self.clip = clip.to_string();
-            self.state.current = clip.to_string();
-            self.state.time = 0.0;
+            self.cambiar_a(clip, fade);
         }
         self.playing = true;
+    }
+
+    /// Empieza a reproducir `clip` fundiéndolo con lo que se ve ahora (incluida una mezcla a
+    /// medias). Si el clip ya se estaba desvaneciendo, sigue desde su tiempo: sin saltos de pie.
+    pub fn cambiar_a(&mut self, clip: &str, fade: f32) {
+        let st = &mut self.state;
+        if fade <= 0.0 || st.current.is_empty() {
+            st.salientes.clear();
+            st.time = 0.0;
+        } else {
+            let w = st.peso_actual();
+            for s in &mut st.salientes {
+                s.peso *= 1.0 - w;
+            }
+            st.salientes.push(Saliente { clip: std::mem::take(&mut st.current), time: st.time, peso: w });
+            st.time = st.salientes.iter().find(|s| s.clip == clip).map(|s| s.time).unwrap_or(0.0);
+            st.salientes.retain(|s| s.peso > 1e-3);
+            if st.salientes.len() > MAX_SALIENTES {
+                st.salientes.sort_by(|a, b| b.peso.total_cmp(&a.peso));
+                st.salientes.truncate(MAX_SALIENTES);
+            }
+            let total: f32 = st.salientes.iter().map(|s| s.peso).sum();
+            for s in &mut st.salientes {
+                s.peso /= total.max(1e-6);
+            }
+            st.fade = fade;
+            st.mezcla = 0.0;
+        }
+        st.current = clip.to_string();
     }
 }
 
@@ -627,8 +674,33 @@ mod tests {
         assert!(json.contains("\"loop\":true") && !json.contains("time"));
         b.state.current = "Idle_Loop".into();
         b.play("Run", 0.3);
-        assert_eq!(b.state.from.as_ref().map(|f| f.0.as_str()), Some("Idle_Loop"));
-        assert_eq!((b.state.time, b.state.fade_left), (0.0, 0.3));
+        assert_eq!(b.state.salientes, vec![Saliente { clip: "Idle_Loop".into(), time: 3.0, peso: 1.0 }]);
+        assert_eq!((b.state.time, b.state.fade, b.state.peso_actual()), (0.0, 0.3, 0.0));
+        let old: Animator = serde_json::from_str(r#"{"clip":"Walk_Loop"}"#).unwrap();
+        assert_eq!(old.transicion, 0.25, "escenas viejas: fundido por defecto");
+    }
+
+    #[test]
+    fn cambio_a_mitad_de_fundido_parte_de_la_mezcla() {
+        let mut a = Animator::new("", "Idle");
+        a.state.current = "Idle".into();
+        a.state.time = 1.0;
+        a.play("Walk", 0.4);
+        a.state.time = 0.2;
+        a.state.mezcla = 0.5; // peso del actual = 0,5 con la curva suave
+        a.play("Run", 0.4);
+        let s = &a.state.salientes;
+        assert_eq!(s.len(), 2);
+        assert!((s[0].peso - 0.5).abs() < 1e-5 && s[0].clip == "Idle");
+        assert!((s[1].peso - 0.5).abs() < 1e-5 && s[1].clip == "Walk" && s[1].time == 0.2);
+        // Volver a un clip que se desvanece retoma su tiempo.
+        a.state.mezcla = 0.0;
+        a.play("Idle", 0.4);
+        assert_eq!(a.state.time, 1.0);
+        assert!(a.state.salientes.len() <= MAX_SALIENTES);
+        // Fundido 0 = corte.
+        a.play("Walk", 0.0);
+        assert!(a.state.salientes.is_empty() && a.state.peso_actual() == 1.0);
     }
 
     #[test]

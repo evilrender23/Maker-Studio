@@ -115,7 +115,9 @@ struct Job {
     source: Arc<AnimAsset>,
     clip: usize,
     time: f32,
-    from: Option<(usize, f32)>,
+    /// Clips que se desvanecen: (clip, tiempo, peso relativo entre ellos). Sin memoria dinámica.
+    from: [(usize, f32, f32); crate::components::MAX_SALIENTES],
+    n_from: usize,
     /// Peso del clip actual (1 = sin fundido).
     weight: f32,
     in_place: bool,
@@ -131,6 +133,7 @@ pub struct Animation {
     jobs: Vec<Job>,
     locals: Vec<Trs>,
     locals_from: Vec<Trs>,
+    locals_capa: Vec<Trs>,
     globals: Vec<Mat4>,
     palette: Vec<Mat4>,
     targets: Vec<(EntityId, EntityId, PathBuf)>,
@@ -178,10 +181,9 @@ impl Animation {
                 }
             }
             if an.state.current != an.clip {
-                an.state.current = an.clip.clone();
-                an.state.time = 0.0;
-                an.state.from = None;
-                an.state.fade_left = 0.0;
+                // Clip cambiado sin `play` (inspector, script que escribe `clip`): fundido por defecto.
+                let (clip, fade) = (an.clip.clone(), an.transicion);
+                an.cambiar_a(&clip, fade);
             }
             let Some(ci) = source.clip(&an.clip) else {
                 let (clip, path) = (an.clip.clone(), src_path.clone());
@@ -190,22 +192,34 @@ impl Animation {
                 continue;
             };
             let dur = source.clips[ci].duration;
-            let step = if an.playing && advance(id) { dt * an.speed } else { 0.0 };
+            let avanza = an.playing && advance(id);
+            let step = if avanza { dt * an.speed } else { 0.0 };
             an.state.time = advance_time(an.state.time, step, dur, an.looping);
-            let mut from = None;
-            if let Some((name, t)) = an.state.from.clone() {
-                an.state.fade_left -= step.abs();
-                match source.clip(&name) {
-                    Some(fi) if an.state.fade_left > 0.0 => {
-                        let ft = advance_time(t, step, source.clips[fi].duration, an.looping);
-                        an.state.from = Some((name, ft));
-                        from = Some((fi, ft));
+            // El fundido va en tiempo real: no depende de la velocidad del clip.
+            let looping = an.looping;
+            let st = &mut an.state;
+            let mut from = [(0usize, 0.0f32, 0.0f32); crate::components::MAX_SALIENTES];
+            let mut n_from = 0;
+            if !st.salientes.is_empty() {
+                if avanza {
+                    st.mezcla += dt / st.fade.max(1e-4);
+                }
+                if st.mezcla >= 1.0 {
+                    st.salientes.clear();
+                } else {
+                    for sl in &mut st.salientes {
+                        if let Some(fi) = source.clip(&sl.clip) {
+                            sl.time = advance_time(sl.time, step, source.clips[fi].duration, looping);
+                            if n_from < from.len() {
+                                from[n_from] = (fi, sl.time, sl.peso);
+                                n_from += 1;
+                            }
+                        }
                     }
-                    _ => an.state.from = None,
                 }
             }
-            let weight = if from.is_some() { 1.0 - an.state.fade_left / an.state.fade.max(1e-4) } else { 1.0 };
-            self.jobs.push(Job { animator: id, source, clip: ci, time: an.state.time, from, weight: weight.clamp(0.0, 1.0), in_place: an.in_place });
+            let weight = if n_from > 0 { st.peso_actual() } else { 1.0 };
+            self.jobs.push(Job { animator: id, source, clip: ci, time: an.state.time, from, n_from, weight: weight.clamp(0.0, 1.0), in_place: an.in_place });
         }
         if self.jobs.is_empty() {
             return;
@@ -243,10 +257,23 @@ impl Animation {
             self.locals.clear();
             self.locals.extend(target.skeleton.nodes.iter().map(|n| n.rest));
             apply_clip(&source.clips[job.clip], job.time, &target, &source, &map, same, job.in_place, &mut self.locals);
-            if let Some((fi, ft)) = job.from {
-                self.locals_from.clear();
-                self.locals_from.extend(target.skeleton.nodes.iter().map(|n| n.rest));
-                apply_clip(&source.clips[fi], ft, &target, &source, &map, same, job.in_place, &mut self.locals_from);
+            if job.n_from > 0 {
+                // Mezcla de los salientes (media ponderada acumulada) y luego hacia el actual.
+                let mut acumulado = 0.0;
+                for &(fi, ft, peso) in &job.from[..job.n_from] {
+                    self.locals_capa.clear();
+                    self.locals_capa.extend(target.skeleton.nodes.iter().map(|n| n.rest));
+                    apply_clip(&source.clips[fi], ft, &target, &source, &map, same, job.in_place, &mut self.locals_capa);
+                    acumulado += peso;
+                    if acumulado <= peso {
+                        std::mem::swap(&mut self.locals_from, &mut self.locals_capa);
+                    } else {
+                        let k = peso / acumulado.max(1e-6);
+                        for (a, b) in self.locals_from.iter_mut().zip(&self.locals_capa) {
+                            *a = a.lerp(b, k);
+                        }
+                    }
+                }
                 for (a, b) in self.locals.iter_mut().zip(&self.locals_from) {
                     *a = b.lerp(a, job.weight);
                 }

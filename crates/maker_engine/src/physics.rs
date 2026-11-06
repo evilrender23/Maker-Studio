@@ -14,6 +14,8 @@ pub struct Physics {
     bodies: HashMap<EntityId, RigidBodyHandle>,
     /// Escala del mundo de cada entidad física (Rapier no tiene escala).
     scales: HashMap<EntityId, Vec3>,
+    /// Raíz del proyecto, para cargar las mallas de los colisionadores convexos.
+    pub raiz: Option<std::path::PathBuf>,
 }
 
 fn world_parts(m: Mat4) -> (Vec3, Quat, Vec3) {
@@ -21,9 +23,19 @@ fn world_parts(m: Mat4) -> (Vec3, Quat, Vec3) {
     (t, r.normalize(), s)
 }
 
-fn shape_builder(shape: &ColliderShape, s: Vec3) -> ColliderBuilder {
+fn shape_builder(shape: &ColliderShape, s: Vec3, malla: Option<&crate::components::MeshSource>, raiz: Option<&std::path::Path>) -> ColliderBuilder {
     let s = s.abs().max(Vec3::splat(1e-4));
     match *shape {
+        ColliderShape::Convex { complejidad } => {
+            let puntos = malla.and_then(|m| crate::convexo::casco(m, raiz, complejidad)).map(|c| c.iter().map(|p| *p * s).collect::<Vec<Vec3>>());
+            match puntos.and_then(|p| ColliderBuilder::convex_hull(&p)) {
+                Some(b) => b,
+                None => {
+                    crate::log::warn("física", "colisionador convexo sin malla válida: se usa una caja");
+                    ColliderBuilder::cuboid(0.5 * s.x, 0.5 * s.y, 0.5 * s.z)
+                }
+            }
+        }
         ColliderShape::Box { half_extents } => {
             let h = half_extents * s;
             ColliderBuilder::cuboid(h.x, h.y, h.z)
@@ -39,12 +51,18 @@ impl Physics {
         let mut world = PhysicsWorld::new();
         world.gravity = gravity;
         world.integration_parameters.dt = FIXED_DT;
-        Self { world, bodies: HashMap::new(), scales: HashMap::new() }
+        Self { world, bodies: HashMap::new(), scales: HashMap::new(), raiz: None }
     }
 
     /// Crea cuerpos para todas las entidades activas con física.
     pub fn build(scene: &Scene) -> Self {
+        Self::build_en(scene, None)
+    }
+
+    /// Como `build`, con la raíz del proyecto para los colisionadores convexos de modelos.
+    pub fn build_en(scene: &Scene, raiz: Option<&std::path::Path>) -> Self {
         let mut p = Physics::new(Vec3::from(scene.env.gravity));
+        p.raiz = raiz.map(std::path::Path::to_path_buf);
         let ids: Vec<EntityId> = {
             let mut q = scene.world.query::<(&EntityId, Option<&RigidBody>, Option<&Collider>)>();
             q.iter().filter(|(_, b, c)| b.is_some() || c.is_some()).map(|(id, _, _)| *id).collect()
@@ -86,7 +104,8 @@ impl Physics {
         }
         let handle = self.world.insert_body(b);
         if let Some(c) = scene.get::<Collider>(id) {
-            let cb = shape_builder(&c.shape, s)
+            let malla = scene.get::<crate::components::MeshRenderer>(id).map(|m| m.mesh);
+            let cb = shape_builder(&c.shape, s, malla.as_ref(), self.raiz.as_deref())
                 .friction(c.friction)
                 .restitution(c.restitution)
                 .sensor(c.is_trigger)

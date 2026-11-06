@@ -419,7 +419,7 @@ impl Editor {
         }
         self.commit("Antes de Play");
         let snapshot = self.scene.to_file();
-        let mut runtime = Runtime::start(&mut self.scene, self.lib.clone());
+        let mut runtime = Runtime::start_en(&mut self.scene, self.lib.clone(), Some(&self.project.root));
         runtime.project_root = Some(self.project.root.clone());
         self.play = Some(PlaySession { runtime, snapshot, selection: self.selection });
         self.game_focus = true;

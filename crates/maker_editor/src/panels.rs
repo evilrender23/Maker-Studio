@@ -872,6 +872,7 @@ fn collider(ed: &mut Editor, ui: &mut Ui, id: EntityId) {
                     ColliderShape::Sphere { radius: 0.5 },
                     ColliderShape::Capsule { half_height: 0.5, radius: 0.5 },
                     ColliderShape::Cylinder { half_height: 0.5, radius: 0.5 },
+                    ColliderShape::Convex { complejidad: 0.5 },
                 ];
                 for o in opts {
                     if ui.selectable_label(std::mem::discriminant(&c.shape) == std::mem::discriminant(&o), o.label()).clicked() {
@@ -891,6 +892,24 @@ fn collider(ed: &mut Editor, ui: &mut Ui, id: EntityId) {
                 ColliderShape::Sphere { radius } => {
                     ui.label("Radio");
                     ui.add(egui::DragValue::new(radius).speed(0.01).range(0.001..=1000.0));
+                    ui.end_row();
+                }
+                ColliderShape::Convex { complejidad } => {
+                    ui.label("Complejidad");
+                    let malla = ed.scene.get::<MeshRenderer>(id).map(|m| m.mesh);
+                    ui.horizontal(|ui| {
+                        let mut pct = *complejidad * 100.0;
+                        if ui.add(egui::Slider::new(&mut pct, 0.0..=100.0).suffix(" %").fixed_decimals(0)).changed() {
+                            *complejidad = pct / 100.0;
+                        }
+                        match &malla {
+                            Some(m) => match maker_engine::convexo::casco(m, Some(&ed.project.root), *complejidad) {
+                                Some(c) => ui.label(RichText::new(format!("{} vértices", c.len())).color(theme::TEXT3)),
+                                None => ui.label(RichText::new("malla no válida").color(theme::RED)),
+                            },
+                            None => ui.label(RichText::new("necesita una malla").color(theme::RED)),
+                        };
+                    });
                     ui.end_row();
                 }
                 ColliderShape::Capsule { half_height, radius } | ColliderShape::Cylinder { half_height, radius } => {

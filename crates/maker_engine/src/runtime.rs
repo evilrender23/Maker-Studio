@@ -49,9 +49,14 @@ struct HostCtx<'a> {
 impl Runtime {
     /// Empieza a jugar la escena: crea la física e instancia los scripts.
     pub fn start(scene: &mut Scene, lib: Option<Arc<ScriptLib>>) -> Runtime {
+        Self::start_en(scene, lib, None)
+    }
+
+    /// Como `start`, con la raíz del proyecto (modelos, colisionadores convexos).
+    pub fn start_en(scene: &mut Scene, lib: Option<Arc<ScriptLib>>, raiz: Option<&std::path::Path>) -> Runtime {
         scene.update_transforms();
-        let physics = Physics::build(scene);
-        let mut rt = Runtime { physics, lib, instances: Vec::new(), time: 0.0, frame: 0, accumulator: 0.0, paused: false, animation: Animation::default(), project_root: None };
+        let physics = Physics::build_en(scene, raiz);
+        let mut rt = Runtime { physics, lib, instances: Vec::new(), time: 0.0, frame: 0, accumulator: 0.0, paused: false, animation: Animation::default(), project_root: raiz.map(std::path::Path::to_path_buf) };
         let mut slots: Vec<(EntityId, Scripts)> = {
             let mut q = scene.world.query::<(&EntityId, &Scripts)>();
             q.iter().map(|(id, s)| (*id, s.clone())).collect()

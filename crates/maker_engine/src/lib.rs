@@ -6,6 +6,7 @@
 pub mod animation;
 pub mod biblioteca;
 pub mod components;
+pub mod convexo;
 pub mod input;
 pub mod log;
 pub mod math;

@@ -223,7 +223,7 @@ fn main() -> eframe::Result<()> {
             let rs = cc.wgpu_render_state.clone().expect("wgpu");
             let mut renderer = SceneRenderer::new(&rs.device, &rs.queue);
             renderer.project_root = Some(project.root.clone());
-            let mut runtime = Runtime::start(&mut scene, lib);
+            let mut runtime = Runtime::start_en(&mut scene, lib, Some(&project.root));
             runtime.project_root = Some(project.root.clone());
             Ok(Box::new(Player {
                 rs,

@@ -400,6 +400,8 @@ pub enum ColliderShape {
     Sphere { radius: f32 },
     Capsule { half_height: f32, radius: f32 },
     Cylinder { half_height: f32, radius: f32 },
+    /// Casco convexo de la malla de la entidad; `complejidad` 0..=1 (0 = casi una caja).
+    Convex { complejidad: f32 },
 }
 
 impl ColliderShape {
@@ -409,6 +411,7 @@ impl ColliderShape {
             ColliderShape::Sphere { .. } => "Esfera",
             ColliderShape::Capsule { .. } => "Cápsula",
             ColliderShape::Cylinder { .. } => "Cilindro",
+            ColliderShape::Convex { .. } => "Convexo",
         }
     }
     /// Forma que encaja con una primitiva de tamaño unidad.

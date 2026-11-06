@@ -172,6 +172,44 @@ El proyecto de demostración trae dos ejemplos apagados en la pila: `crt.wgsl`
 (Bayer 4×4 con paleta de dos colores). Exportar el juego copia los efectos
 propios y las LUT que usan las escenas.
 
+## Normal maps
+
+PBR, toon y plumilla perturban la normal con un normal map (espacio tangente,
+convención OpenGL de glTF); «Sin luz» lo ignora. Las tangentes salen del
+atributo `TANGENT` del glTF o, si no lo trae, se calculan con MikkTSpace (el
+estándar de Blender, Unity y Unreal) al cargar; las primitivas y las mallas
+horneadas o reflejadas también las llevan. El signo del determinante corrige
+las UV en espejo.
+
+En el Inspector (**Malla → Normal map**):
+
+| Origen | Qué usa |
+|--------|---------|
+| **Del modelo** | El `normalTexture` de cada material glTF (con su `scale`). Sin él, ninguno. Por defecto; las escenas antiguas cargan así. |
+| **Textura** | Una imagen elegida (del proyecto o los `*_Normal` de la biblioteca) para todas las submallas. |
+| **Generado** | Se calcula del color base y se guarda como PNG. |
+| **Automático** | Se calcula del color base al cargar, en memoria, sin archivo. |
+
+- **Intensidad** (0..2) escala la inclinación (1 = como viene, 0 = plano).
+  **Verde DirectX** invierte el verde para mapas de Unreal o 3ds Max.
+- **Generar**: la altura es la luminancia del color base (opcionalmente
+  invertida y desenfocada, **Suavizado** en px) y la pendiente sale de un
+  filtro de Sobel multiplicado por **Relieve**. Las submallas que ya traen
+  normal map lo conservan; el resto usa el generado.
+- Los PNG generados se escriben junto a la textura de origen
+  (`ladrillo.jpg` → `ladrillo_normal_gen.png`) o, si el origen es de la
+  biblioteca (solo lectura), en `assets/generados/<pack>/`. Cada PNG guarda
+  en un bloque `tEXt` el hash del origen y los parámetros: si nada cambia no
+  se recalcula. El editor genera en un hilo aparte y espera 300 ms tras el
+  último cambio de un deslizador.
+- El menú contextual de la Jerarquía tiene **Generar normal maps que falten**
+  para una entidad y sus hijos (mallas con textura de color y sin normal map).
+- Exportar el juego copia los normal maps elegidos o generados; los de los
+  glTF van con su modelo. El modo automático se calcula también en el
+  reproductor, al cargar.
+- Los normal maps se cargan en lineal (no sRGB) y sus mipmaps promedian
+  vectores y los renormalizan.
+
 ## Limitaciones
 
 - La plumilla está en espacio de pantalla: los trazos no se pegan a la
@@ -184,5 +222,12 @@ propios y las LUT que usan las escenas.
   peor que sin efectos; FXAA lo suaviza.
 - Los efectos que usan profundidad leen la primera muestra del MSAA y
   reconstruyen la normal de la profundidad (no hay búfer de normales).
+- El normal map generado es una aproximación: toma el color por altura, así
+  que las manchas oscuras se hunden aunque sean planas. Un normal map
+  pintado o horneado es siempre mejor.
+- Solo se usa el juego de UV del color base; un `normalTexture` con otro
+  `texCoord` se ignora. Sin oclusión de paralaje ni mapas de altura.
+- El modo automático genera al cargar: en texturas grandes la primera vez
+  tarda un poco (en otro hilo; mientras, la malla se ve sin relieve).
 - La rejilla y el contorno de selección del editor pasan por la cadena de
   posprocesado (el tonemap y los efectos los alteran un poco).

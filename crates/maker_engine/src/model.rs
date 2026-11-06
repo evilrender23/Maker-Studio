@@ -607,4 +607,21 @@ mod tests {
         assert_eq!(percent_decode("Mi%20Textura.png"), "Mi Textura.png");
         assert_eq!(base64_decode("aGVsbG8="), b"hello");
     }
+
+    /// Un modelo de la biblioteca reimportada trae su normal map (archivo
+    /// compartido del pack) y tangentes unitarias con signo.
+    #[test]
+    fn library_model_keeps_normal_map_and_gets_tangents() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/biblioteca/medieval/Wall_Plaster_Straight.glb");
+        let m = ModelData::load(&path).expect("carga el modelo");
+        let normales: Vec<_> = m.materials.iter().filter_map(|mat| mat.normal.as_ref()).collect();
+        assert!(!normales.is_empty());
+        for n in normales {
+            let TextureSource::File(p) = n else { panic!("normal map incrustado: {n:?}") };
+            assert!(p.is_file(), "falta {}", p.display());
+            assert!(p.to_string_lossy().contains("_Normal"));
+        }
+        assert_eq!(m.mesh.tangents.len(), m.mesh.positions.len());
+        assert!(m.mesh.tangents.iter().all(|t| (t.truncate().length() - 1.0).abs() < 1e-3 && t.w.abs() == 1.0));
+    }
 }

@@ -191,6 +191,8 @@ pub struct Editor {
     pub estilos: crate::estilos_ui::EstilosUi,
     /// Plantillas leídas (para calcular los retoques de cada instancia).
     plantillas: BTreeMap<String, Option<PlantillaUi>>,
+    /// Normal maps generados (hilo aparte) e información para el Inspector.
+    pub normales: crate::normal_ui::Normales,
 }
 
 impl Editor {
@@ -264,6 +266,7 @@ impl Editor {
             ui_arrastre: None,
             estilos: Default::default(),
             plantillas: BTreeMap::new(),
+            normales: Default::default(),
         };
         let docs = ed.docs_ui();
         ed.undo.reset_con(&ed.scene, docs);
@@ -748,6 +751,7 @@ impl Editor {
             }
         }
         self.input.end_frame();
+        crate::normal_ui::update(self);
         self.poll_build();
         if self.comprobar_fuentes || self.last_lib_check.elapsed() > Duration::from_secs(1) {
             self.comprobar_fuentes = false;
@@ -982,8 +986,10 @@ impl Editor {
         // Imágenes y fuentes de la interfaz: las de la biblioteca van con las demás;
         // las del proyecto fuera de scenes/, assets/ y ui/ se copian una a una.
         let usados = ui::recursos_usados(&scenes, &self.ui.recursos);
+        // Y los normal maps elegidos o generados (los de los glTF van con su modelo).
+        let usados = usados.into_iter().chain(maker_engine::normal_gen::files_used(&scenes, &self.project.root));
         let (extra, propios): (std::collections::BTreeSet<String>, Vec<String>) = {
-            let (b, p): (Vec<String>, Vec<String>) = usados.into_iter().partition(|r| maker_engine::biblioteca::is_library_path(r));
+            let (b, p): (Vec<String>, Vec<String>) = usados.partition(|r| maker_engine::biblioteca::is_library_path(r));
             (b.into_iter().collect(), p)
         };
         for r in propios {

@@ -25,6 +25,8 @@ enum HAction {
     /// Modelo soltado desde Contenido o la Biblioteca (como hijo de una entidad).
     AddModel(String, Option<EntityId>),
     SaveTemplate(EntityId),
+    /// Normal maps generados para las mallas de la entidad y sus hijos que no tienen.
+    GenerateNormals(EntityId),
 }
 
 pub fn create_menu(ui: &mut Ui) -> Option<Create> {
@@ -246,6 +248,9 @@ fn apply(ed: &mut Editor, a: HAction) {
             ed.instanciar_plantilla(&path, parent);
         }
         HAction::SaveTemplate(id) => ed.guardar_como_plantilla(id),
+        HAction::GenerateNormals(id) => {
+            crate::normal_ui::generar_que_faltan(ed, id);
+        }
         HAction::AddModel(path, parent) => {
             let id = ed.add_model(&path);
             if let Some(p) = parent {
@@ -423,6 +428,12 @@ fn row(ed: &mut Editor, ui: &mut Ui, id: EntityId, g: &Guias, actions: &mut Vec<
         }
         if ed.scene.has::<ui::RectUi>(id) && ui.button("Guardar como plantilla").clicked() {
             actions.push(HAction::SaveTemplate(id));
+        }
+        if ed.scene.has::<MeshRenderer>(id) || g.hijos.is_some() {
+            let b = ui.button("Generar normal maps que falten");
+            if b.on_hover_text("Para las mallas de esta entidad y sus hijos con textura de color y sin normal map").clicked() {
+                actions.push(HAction::GenerateNormals(id));
+            }
         }
         ui.separator();
         if ui.button(RichText::new("Eliminar  (Supr)").color(theme::RED)).clicked() {
@@ -671,6 +682,9 @@ fn mesh_renderer(ed: &mut Editor, ui: &mut Ui, id: EntityId) {
         return;
     }
     let before = mr.clone();
+    let normal_info = ed.normales.info(&mut ed.renderer, &mr.mesh);
+    let generando = ed.normales.generando();
+    let root = ed.project.root.clone();
     egui::Grid::new("mesh-grid").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
         ui.label("Malla");
         let text = match &mr.mesh {
@@ -696,6 +710,7 @@ fn mesh_renderer(ed: &mut Editor, ui: &mut Ui, id: EntityId) {
         });
         ui.end_row();
         material_fields(ui, &mut mr.material, ed.scene.env.global_shading.model.is_some());
+        crate::normal_ui::filas(ui, &mut mr.material, normal_info.as_ref(), generando, &root);
         ui.label("Proyecta sombras");
         ui.checkbox(&mut mr.cast_shadows, "");
         ui.end_row();

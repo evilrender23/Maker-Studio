@@ -87,11 +87,14 @@ sentada.
 
 ## Qué se ha optimizado
 
-Los packs originales ocupan ~1,2 GB; la biblioteca ocupa ~72 MB:
+Los packs originales ocupan ~1,2 GB; la biblioteca ocupa ~109 MB:
 
 - Solo glTF/GLB (sin FBX ni OBJ). Por modelo, un `.glb` con la geometría que
   referencia texturas compartidas del pack (`<pack>/texturas/`).
-- Solo la textura de color base (sin normales ni rugosidad), a 2048 px como
+- La textura de color base y el normal map (`normalTexture` con su escala);
+  sin rugosidad/metal ni oclusión. 644 de los 756 modelos traen normal map
+  (42 texturas `*_Normal.jpg`, a 1024 px, JPEG de calidad 92 sin submuestreo y
+  sin alfa; ~10 MB del total). Color a 2048 px como
   máximo, JPEG de calidad 92 sin submuestreo de color salvo las que tienen alfa (PNG con
   los bordes transparentes rellenados para que el filtrado no oscurezca las
   hojas). Texturas deduplicadas por contenido dentro de cada pack.
@@ -124,7 +127,12 @@ cargo run --release -p maker_render --example miniaturas -- assets/biblioteca
 
 ## Limitaciones
 
-- Solo color base: sin mapas de normales ni de rugosidad/metal.
+- Sin mapas de rugosidad/metal ni oclusión. Los normal maps van a la mitad de
+  resolución que el color (1024 px). A los modelos sin normal map (vegetación,
+  la mayoría del pack de naturaleza) se les puede generar uno desde el
+  Inspector (ver [SHADERS.md](SHADERS.md#normal-maps)).
+- El pack de personajes no trae algunos normal maps que sus glTF citan (ojos,
+  un peinado): esas submallas quedan sin relieve.
 - Los atuendos completos ya incluyen cuerpo y cabeza; las piezas modulares
   («Piezas») van sobre un personaje base y pueden dejar asomar la piel en
   algunas poses.

@@ -11,6 +11,7 @@ mod editor;
 mod estilos_ui;
 mod gizmo;
 mod hub;
+mod normal_ui;
 mod panels;
 mod icons;
 mod pixel_icons;

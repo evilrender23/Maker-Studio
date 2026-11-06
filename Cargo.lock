@@ -1568,15 +1568,19 @@ dependencies = [
 name = "maker_engine"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
+ "epaint_default_fonts",
  "glam 0.33.12",
  "gltf",
  "hecs",
+ "image",
  "libloading",
  "log",
  "maker_api",
  "rapier3d",
  "serde",
  "serde_json",
+ "skrifa",
 ]
 
 [[package]]

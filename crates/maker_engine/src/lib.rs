@@ -17,6 +17,7 @@ pub mod project;
 pub mod runtime;
 pub mod scene;
 pub mod scripting;
+pub mod ui;
 
 pub use components::*;
 pub use glam;

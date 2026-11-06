@@ -15,3 +15,9 @@ serde.workspace = true
 serde_json.workspace = true
 libloading.workspace = true
 log.workspace = true
+bytemuck.workspace = true
+# Interfaz: lector de fuentes y fuente por defecto (los mismos que ya compila egui).
+skrifa = { version = "0.44", default-features = false, features = ["std", "autohint_shaping"] }
+epaint_default_fonts = "0.37"
+# Solo para leer el tamaño real de las imágenes de la interfaz (cabecera).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

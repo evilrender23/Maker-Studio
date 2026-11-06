@@ -3,6 +3,7 @@
 //! (`.mscene`) apto para control de versiones, como `.tscn` de Godot.
 
 use crate::components::*;
+use crate::ui;
 use glam::{Mat4, Quat, Vec3};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -62,6 +63,19 @@ pub struct EntityRecord {
     pub scripts: Option<Scripts>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub animator: Option<Animator>,
+    // Interfaz.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lienzo: Option<ui::Lienzo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rect_ui: Option<ui::RectUi>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contenedor: Option<ui::Contenedor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub widget: Option<ui::WidgetUi>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plantilla: Option<ui::InstanciaUi>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origen: Option<ui::OrigenPlantilla>,
 }
 
 fn yes() -> bool {
@@ -390,6 +404,12 @@ impl Scene {
             collider: self.get::<Collider>(id),
             scripts: self.get::<Scripts>(id),
             animator: self.get::<Animator>(id),
+            lienzo: self.get::<ui::Lienzo>(id),
+            rect_ui: self.get::<ui::RectUi>(id),
+            contenedor: self.get::<ui::Contenedor>(id),
+            widget: self.get::<ui::WidgetUi>(id),
+            plantilla: self.get::<ui::InstanciaUi>(id),
+            origen: self.get::<ui::OrigenPlantilla>(id),
         })
     }
 
@@ -423,9 +443,50 @@ impl Scene {
         if let Some(c) = &r.animator {
             b.add(c.clone());
         }
+        if let Some(c) = &r.lienzo {
+            b.add(c.clone());
+        }
+        if let Some(c) = &r.rect_ui {
+            b.add(c.clone());
+        }
+        if let Some(c) = &r.contenedor {
+            b.add(c.clone());
+        }
+        if let Some(c) = &r.widget {
+            b.add(c.clone());
+        }
+        if let Some(c) = &r.plantilla {
+            b.add(c.clone());
+        }
+        if let Some(c) = r.origen {
+            b.add(c);
+        }
         let e = self.world.spawn(b.build());
         self.index.insert(r.id, e);
         self.next_id = self.next_id.max(r.id.0 + 1);
+    }
+
+    /// Sustituye todos los componentes de una entidad por los de `r` (mismo id).
+    pub fn reemplazar(&mut self, r: &EntityRecord) {
+        if let Some(e) = self.index.remove(&r.id) {
+            let _ = self.world.despawn(e);
+        }
+        self.spawn_record(r);
+    }
+
+    /// Crea una entidad desde un registro (el id debe estar libre; si no, se le da uno nuevo).
+    pub fn spawn_from_record(&mut self, r: &EntityRecord) -> EntityId {
+        let mut r = r.clone();
+        if self.contains(r.id) || r.id.0 == 0 {
+            r.id = self.alloc_id();
+        }
+        self.spawn_record(&r);
+        r.id
+    }
+
+    /// Reserva un id nuevo sin crear la entidad.
+    pub fn new_id(&mut self) -> EntityId {
+        self.alloc_id()
     }
 
     pub fn to_file(&self) -> SceneFile {

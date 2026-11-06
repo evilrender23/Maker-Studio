@@ -262,6 +262,73 @@ pub struct Rgba {
     pub a: f32,
 }
 
+/// Rectángulo de un elemento de interfaz en unidades de su lienzo
+/// (esquina superior izquierda, y hacia abajo).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct UiRect {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+/// Eventos de interfaz que se consultan con `Ctx::ui_event` (valen durante
+/// el fotograma en que ocurren).
+pub mod ui_event {
+    /// Pulsado y soltado encima (botones, paneles, casillas…).
+    pub const CLICKED: u32 = 0;
+    /// El valor cambió por el usuario (deslizador, casilla, campo de texto).
+    pub const CHANGED: u32 = 1;
+    pub const HOVER_ENTER: u32 = 2;
+    pub const PRESSED: u32 = 3;
+    pub const RELEASED: u32 = 4;
+    /// Intro en un campo de texto.
+    pub const SUBMITTED: u32 = 5;
+    pub const HOVER_EXIT: u32 = 6;
+}
+
+/// Órdenes de dibujo de un widget personalizado (`Ctx::ui_draw`).
+pub mod ui_draw {
+    /// `rect` = x, y, ancho, alto.
+    pub const RECT: u32 = 0;
+    /// `rect` + `radius`; con `width` > 0 solo el borde.
+    pub const ROUNDED_RECT: u32 = 1;
+    /// `rect` = cx, cy, radio; con `width` > 0 solo el aro.
+    pub const CIRCLE: u32 = 2;
+    /// `rect` = x0, y0, x1, y1; grosor `width`.
+    pub const LINE: u32 = 3;
+    /// `rect` = caja; texto = ruta de la imagen; `color` = tinte.
+    pub const IMAGE: u32 = 4;
+    /// `rect` = caja (ancho 0 = sin partir líneas); `radius` = tamaño;
+    /// `extra` = alineación horizontal y vertical (0 inicio, 1 centro, 2 fin).
+    pub const TEXT: u32 = 5;
+    /// `rect` = cx, cy, radio; grosor `width`; `extra` = ángulos inicial y
+    /// final en grados (0 = derecha, sentido horario).
+    pub const ARC: u32 = 6;
+}
+
+/// Una orden de dibujo (C-ABI). Coordenadas en unidades del lienzo,
+/// relativas a la esquina superior izquierda del widget.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct UiDrawCmd {
+    pub kind: u32,
+    pub rect: [f32; 4],
+    pub color: Rgba,
+    pub radius: f32,
+    pub width: f32,
+    pub extra: [f32; 2],
+    pub str_ptr: *const u8,
+    pub str_len: usize,
+}
+
+impl Default for UiDrawCmd {
+    fn default() -> Self {
+        Self { kind: 0, rect: [0.0; 4], color: Rgba::default(), radius: 0.0, width: 0.0, extra: [0.0; 2], str_ptr: std::ptr::null(), str_len: 0 }
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FrameInfo {
@@ -302,6 +369,28 @@ pub struct HostApi {
     /// si la entidad no tiene Animator.
     pub play_animation: unsafe extern "C" fn(*mut c_void, Entity, *const u8, usize, f32) -> bool,
     pub set_animation_speed: unsafe extern "C" fn(*mut c_void, Entity, f32),
+    // ── Interfaz (añadidas sin cambiar la ABI: las bibliotecas antiguas no las ven) ──
+    pub ui_set_text: unsafe extern "C" fn(*mut c_void, Entity, *const u8, usize),
+    /// Copia hasta `cap` bytes del texto en `buf` y devuelve su longitud total.
+    pub ui_get_text: unsafe extern "C" fn(*mut c_void, Entity, *mut u8, usize) -> usize,
+    pub ui_set_value: unsafe extern "C" fn(*mut c_void, Entity, f32),
+    pub ui_get_value: unsafe extern "C" fn(*mut c_void, Entity) -> f32,
+    pub ui_set_visible: unsafe extern "C" fn(*mut c_void, Entity, bool),
+    pub ui_is_visible: unsafe extern "C" fn(*mut c_void, Entity) -> bool,
+    pub ui_set_interactable: unsafe extern "C" fn(*mut c_void, Entity, bool),
+    pub ui_set_style: unsafe extern "C" fn(*mut c_void, Entity, *const u8, usize),
+    pub ui_set_image: unsafe extern "C" fn(*mut c_void, Entity, *const u8, usize),
+    pub ui_set_color: unsafe extern "C" fn(*mut c_void, Entity, Rgba),
+    pub ui_set_opacity: unsafe extern "C" fn(*mut c_void, Entity, f32),
+    pub ui_event: unsafe extern "C" fn(*mut c_void, Entity, u32) -> bool,
+    /// Instancia una plantilla `.mui` (ruta UTF-8) como hija de `parent` (o en el primer lienzo).
+    pub ui_instantiate: unsafe extern "C" fn(*mut c_void, *const u8, usize, Entity) -> Entity,
+    pub ui_draw: unsafe extern "C" fn(*mut c_void, Entity, *const UiDrawCmd, usize),
+    pub ui_rect: unsafe extern "C" fn(*mut c_void, Entity) -> UiRect,
+    pub ui_set_position: unsafe extern "C" fn(*mut c_void, Entity, Vec2),
+    pub ui_set_size: unsafe extern "C" fn(*mut c_void, Entity, Vec2),
+    pub ui_pointer_over: unsafe extern "C" fn(*mut c_void) -> bool,
+    pub ui_set_theme: unsafe extern "C" fn(*mut c_void, *const u8, usize),
 }
 
 /// Tipos de propiedad exportada (como `[SerializeField]` / `@export`).
@@ -556,6 +645,163 @@ impl<'a> Ctx<'a> {
         let ok = unsafe { (self.api.raycast)(self.api.ctx, origin, dir, max_distance, &mut hit) };
         ok.then_some(hit)
     }
+
+    // — interfaz —
+    /// Elemento de interfaz por nombre (igual que `find`).
+    pub fn ui(&self, name: &str) -> Option<Entity> {
+        self.find(name)
+    }
+    /// Texto de un Texto, Botón, Casilla o Campo de texto.
+    pub fn ui_set_text(&mut self, e: Entity, text: &str) {
+        unsafe { (self.api.ui_set_text)(self.api.ctx, e, text.as_ptr(), text.len()) }
+    }
+    pub fn ui_text(&self, e: Entity) -> String {
+        let n = unsafe { (self.api.ui_get_text)(self.api.ctx, e, std::ptr::null_mut(), 0) };
+        let mut buf = vec![0u8; n];
+        let n = unsafe { (self.api.ui_get_text)(self.api.ctx, e, buf.as_mut_ptr(), buf.len()) }.min(buf.len());
+        buf.truncate(n);
+        String::from_utf8(buf).unwrap_or_default()
+    }
+    /// Valor de una barra o deslizador (la casilla: 0 o 1).
+    pub fn ui_set_value(&mut self, e: Entity, v: f32) {
+        unsafe { (self.api.ui_set_value)(self.api.ctx, e, v) }
+    }
+    pub fn ui_value(&self, e: Entity) -> f32 {
+        unsafe { (self.api.ui_get_value)(self.api.ctx, e) }
+    }
+    pub fn ui_set_visible(&mut self, e: Entity, visible: bool) {
+        unsafe { (self.api.ui_set_visible)(self.api.ctx, e, visible) }
+    }
+    pub fn ui_visible(&self, e: Entity) -> bool {
+        unsafe { (self.api.ui_is_visible)(self.api.ctx, e) }
+    }
+    pub fn ui_set_interactable(&mut self, e: Entity, on: bool) {
+        unsafe { (self.api.ui_set_interactable)(self.api.ctx, e, on) }
+    }
+    /// Cambia el estilo con nombre del elemento ("" = el del tema).
+    pub fn ui_set_style(&mut self, e: Entity, style: &str) {
+        unsafe { (self.api.ui_set_style)(self.api.ctx, e, style.as_ptr(), style.len()) }
+    }
+    /// Imagen de un widget Imagen (ruta del proyecto o `biblioteca://`).
+    pub fn ui_set_image(&mut self, e: Entity, path: &str) {
+        unsafe { (self.api.ui_set_image)(self.api.ctx, e, path.as_ptr(), path.len()) }
+    }
+    /// Color (sRGB): el del texto en un Texto, el tinte en una Imagen y el
+    /// fondo en el resto (como retoque local).
+    pub fn ui_set_color(&mut self, e: Entity, rgba: [f32; 4]) {
+        unsafe { (self.api.ui_set_color)(self.api.ctx, e, Rgba { r: rgba[0], g: rgba[1], b: rgba[2], a: rgba[3] }) }
+    }
+    /// Opacidad del elemento y sus hijos.
+    pub fn ui_set_opacity(&mut self, e: Entity, o: f32) {
+        unsafe { (self.api.ui_set_opacity)(self.api.ctx, e, o) }
+    }
+    /// ¿Ocurrió el evento (`ui_event::CLICKED`…) en este fotograma?
+    pub fn ui_event(&self, e: Entity, kind: u32) -> bool {
+        unsafe { (self.api.ui_event)(self.api.ctx, e, kind) }
+    }
+    pub fn ui_clicked(&self, e: Entity) -> bool {
+        self.ui_event(e, ui_event::CLICKED)
+    }
+    pub fn ui_changed(&self, e: Entity) -> bool {
+        self.ui_event(e, ui_event::CHANGED)
+    }
+    /// Instancia una plantilla `.mui` bajo `parent` (`Entity::NONE` = primer lienzo).
+    pub fn ui_instantiate(&mut self, template: &str, parent: Entity) -> Option<Entity> {
+        let e = unsafe { (self.api.ui_instantiate)(self.api.ctx, template.as_ptr(), template.len(), parent) };
+        (!e.is_none()).then_some(e)
+    }
+    /// Rectángulo del elemento en unidades de su lienzo.
+    pub fn ui_rect(&self, e: Entity) -> UiRect {
+        unsafe { (self.api.ui_rect)(self.api.ctx, e) }
+    }
+    /// Posición del pivote respecto a sus anclas.
+    pub fn ui_set_position(&mut self, e: Entity, p: Vec2) {
+        unsafe { (self.api.ui_set_position)(self.api.ctx, e, p) }
+    }
+    pub fn ui_set_size(&mut self, e: Entity, s: Vec2) {
+        unsafe { (self.api.ui_set_size)(self.api.ctx, e, s) }
+    }
+    /// ¿El ratón está sobre la interfaz? (Los clics sobre ella no llegan al juego.)
+    pub fn ui_pointer_over(&self) -> bool {
+        unsafe { (self.api.ui_pointer_over)(self.api.ctx) }
+    }
+    /// Cambia el tema del proyecto (nombre del `.mtema`): reestiliza toda la interfaz.
+    pub fn ui_set_theme(&mut self, theme: &str) {
+        unsafe { (self.api.ui_set_theme)(self.api.ctx, theme.as_ptr(), theme.len()) }
+    }
+    /// Sustituye lo que dibuja el widget personalizado `e`. Lo dibujado se
+    /// mantiene hasta la siguiente llamada.
+    pub fn ui_draw(&mut self, e: Entity, f: impl FnOnce(&mut UiPainter)) {
+        let mut p = UiPainter::default();
+        f(&mut p);
+        self.ui_submit(e, &p);
+    }
+    /// Como `ui_draw` con un pintor reutilizable (sin reservar memoria cada fotograma).
+    pub fn ui_submit(&mut self, e: Entity, p: &UiPainter) {
+        let mut cmds = p.cmds.clone();
+        for c in &mut cmds {
+            if c.str_len > 0 {
+                c.str_ptr = unsafe { p.text.as_ptr().add(c.str_ptr as usize) };
+            }
+        }
+        unsafe { (self.api.ui_draw)(self.api.ctx, e, cmds.as_ptr(), cmds.len()) }
+    }
+}
+
+/// Pintor inmediato de un widget personalizado. Coordenadas en unidades del
+/// lienzo desde la esquina superior izquierda del widget; colores sRGB.
+#[derive(Default, Clone)]
+pub struct UiPainter {
+    cmds: Vec<UiDrawCmd>,
+    text: String,
+}
+
+impl UiPainter {
+    pub fn clear(&mut self) {
+        self.cmds.clear();
+        self.text.clear();
+    }
+    fn push(&mut self, kind: u32, rect: [f32; 4], color: [f32; 4], radius: f32, width: f32, extra: [f32; 2], s: &str) {
+        // Durante la construcción `str_ptr` guarda el desplazamiento en `text`.
+        let off = self.text.len();
+        self.text.push_str(s);
+        let color = Rgba { r: color[0], g: color[1], b: color[2], a: color[3] };
+        self.cmds.push(UiDrawCmd { kind, rect, color, radius, width, extra, str_ptr: off as *const u8, str_len: s.len() });
+    }
+    pub fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
+        self.push(ui_draw::RECT, [x, y, w, h], color, 0.0, 0.0, [0.0; 2], "");
+    }
+    pub fn rounded_rect(&mut self, x: f32, y: f32, w: f32, h: f32, radius: f32, color: [f32; 4]) {
+        self.push(ui_draw::ROUNDED_RECT, [x, y, w, h], color, radius, 0.0, [0.0; 2], "");
+    }
+    /// Solo el borde de un rectángulo redondeado.
+    pub fn rounded_rect_outline(&mut self, x: f32, y: f32, w: f32, h: f32, radius: f32, width: f32, color: [f32; 4]) {
+        self.push(ui_draw::ROUNDED_RECT, [x, y, w, h], color, radius, width.max(0.01), [0.0; 2], "");
+    }
+    pub fn circle(&mut self, cx: f32, cy: f32, r: f32, color: [f32; 4]) {
+        self.push(ui_draw::CIRCLE, [cx, cy, r, 0.0], color, 0.0, 0.0, [0.0; 2], "");
+    }
+    pub fn ring(&mut self, cx: f32, cy: f32, r: f32, width: f32, color: [f32; 4]) {
+        self.push(ui_draw::CIRCLE, [cx, cy, r, 0.0], color, 0.0, width.max(0.01), [0.0; 2], "");
+    }
+    pub fn line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, width: f32, color: [f32; 4]) {
+        self.push(ui_draw::LINE, [x0, y0, x1, y1], color, 0.0, width, [0.0; 2], "");
+    }
+    /// Arco de `from` a `to` grados (0 = derecha, sentido horario).
+    pub fn arc(&mut self, cx: f32, cy: f32, r: f32, from_deg: f32, to_deg: f32, width: f32, color: [f32; 4]) {
+        self.push(ui_draw::ARC, [cx, cy, r, 0.0], color, 0.0, width, [from_deg, to_deg], "");
+    }
+    pub fn image(&mut self, x: f32, y: f32, w: f32, h: f32, path: &str, tint: [f32; 4]) {
+        self.push(ui_draw::IMAGE, [x, y, w, h], tint, 0.0, 0.0, [0.0; 2], path);
+    }
+    /// Texto con la fuente del motor. `w` = 0: una línea desde (x, y).
+    pub fn text(&mut self, x: f32, y: f32, w: f32, h: f32, size: f32, text: &str, color: [f32; 4]) {
+        self.push(ui_draw::TEXT, [x, y, w, h], color, size, 0.0, [0.0; 2], text);
+    }
+    /// Texto centrado en una caja.
+    pub fn text_centered(&mut self, x: f32, y: f32, w: f32, h: f32, size: f32, text: &str, color: [f32; 4]) {
+        self.push(ui_draw::TEXT, [x, y, w, h], color, size, 0.0, [1.0, 1.0], text);
+    }
 }
 
 enum PropMode {
@@ -737,7 +983,7 @@ macro_rules! export_scripts {
 }
 
 pub mod prelude {
-    pub use crate::{Ctx, Entity, Key, MouseButton, Primitive, Props, Quat, RayHit, Script, Shading, Vec2, Vec3, export_scripts, spawn_flags};
+    pub use crate::{Ctx, Entity, Key, MouseButton, Primitive, Props, Quat, RayHit, Script, Shading, UiPainter, UiRect, Vec2, Vec3, export_scripts, spawn_flags, ui_event};
 }
 
 #[cfg(test)]

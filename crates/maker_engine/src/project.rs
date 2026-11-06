@@ -18,6 +18,9 @@ pub struct ProjectFile {
     pub main_scene: String,
     #[serde(default)]
     pub engine_version: String,
+    /// Tema de interfaz del proyecto (nombre de un `.mtema`); vacío = aspecto neutro del motor.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tema_ui: String,
 }
 
 #[derive(Clone, Debug)]
@@ -109,7 +112,7 @@ impl Project {
         }
         let project = Project {
             root: root.canonicalize().unwrap_or(root.to_path_buf()),
-            file: ProjectFile { name: name.into(), main_scene: "scenes/main.mscene".into(), engine_version: env!("CARGO_PKG_VERSION").into() },
+            file: ProjectFile { name: name.into(), main_scene: "scenes/main.mscene".into(), engine_version: env!("CARGO_PKG_VERSION").into(), tema_ui: String::new() },
         };
         project.save()?;
         let crate_name = sanitize_crate_name(name);

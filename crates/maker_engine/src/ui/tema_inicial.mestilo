@@ -1,0 +1,73 @@
+{
+  "estilos": {
+    "panel": {
+      "normal": {
+        "fondo": { "Color": [0.98, 0.98, 0.99, 0.94] },
+        "borde_color": [0.82, 0.84, 0.9, 1.0],
+        "borde_ancho": 1.0,
+        "radio": [12.0, 12.0, 12.0, 12.0],
+        "sombra": { "color": [0.05, 0.07, 0.15, 0.25], "desplazamiento": [0.0, 6.0], "difuminado": 18.0, "expansion": 0.0 },
+        "relleno": [16.0, 16.0, 16.0, 16.0]
+      }
+    },
+    "texto": {
+      "normal": { "tam_texto": 26.0, "color_texto": [0.12, 0.13, 0.16, 1.0] }
+    },
+    "boton": {
+      "normal": {
+        "fondo": { "Color": [0.0, 0.33, 0.99, 1.0] },
+        "radio": [10.0, 10.0, 10.0, 10.0],
+        "relleno": [16.0, 8.0, 16.0, 8.0],
+        "tam_texto": 24.0,
+        "color_texto": [1.0, 1.0, 1.0, 1.0],
+        "transicion": 0.12
+      },
+      "encima": { "fondo": { "Color": [0.16, 0.45, 1.0, 1.0] }, "escala": 1.03 },
+      "pulsado": { "fondo": { "Color": [0.0, 0.25, 0.8, 1.0] }, "escala": 0.97, "transicion": 0.05 },
+      "desactivado": { "fondo": { "Color": [0.75, 0.77, 0.82, 1.0] }, "color_texto": [0.95, 0.95, 0.97, 1.0] },
+      "foco": { "borde_color": [0.1, 0.1, 0.1, 1.0], "borde_ancho": 2.0 }
+    },
+    "barra": {
+      "normal": { "fondo": { "Color": [0.85, 0.87, 0.92, 1.0] }, "radio": [8.0, 8.0, 8.0, 8.0] },
+      "partes": { "relleno": { "normal": { "fondo": { "Color": [0.0, 0.33, 0.99, 1.0] }, "radio": [8.0, 8.0, 8.0, 8.0] } } }
+    },
+    "deslizador": {
+      "hereda": "barra",
+      "partes": {
+        "relleno": { "normal": { "fondo": { "Color": [0.0, 0.33, 0.99, 1.0] }, "radio": [8.0, 8.0, 8.0, 8.0] } },
+        "tirador": {
+          "normal": { "fondo": { "Color": [1.0, 1.0, 1.0, 1.0] }, "borde_color": [0.0, 0.33, 0.99, 1.0], "borde_ancho": 3.0, "radio": [99.0, 99.0, 99.0, 99.0] },
+          "encima": { "escala": 1.1 }
+        }
+      }
+    },
+    "casilla": {
+      "normal": {
+        "fondo": { "Color": [1.0, 1.0, 1.0, 1.0] },
+        "borde_color": [0.6, 0.63, 0.7, 1.0],
+        "borde_ancho": 2.0,
+        "radio": [6.0, 6.0, 6.0, 6.0],
+        "tam_texto": 22.0,
+        "color_texto": [0.12, 0.13, 0.16, 1.0]
+      },
+      "encima": { "borde_color": [0.0, 0.33, 0.99, 1.0] },
+      "partes": { "marca": { "normal": { "fondo": { "Color": [0.0, 0.33, 0.99, 1.0] }, "radio": [3.0, 3.0, 3.0, 3.0] } } }
+    },
+    "campo": {
+      "normal": {
+        "fondo": { "Color": [1.0, 1.0, 1.0, 1.0] },
+        "borde_color": [0.75, 0.78, 0.85, 1.0],
+        "borde_ancho": 1.5,
+        "radio": [8.0, 8.0, 8.0, 8.0],
+        "relleno": [12.0, 6.0, 12.0, 6.0],
+        "tam_texto": 22.0,
+        "color_texto": [0.12, 0.13, 0.16, 1.0]
+      },
+      "foco": { "borde_color": [0.0, 0.33, 0.99, 1.0], "borde_ancho": 2.0 },
+      "partes": {
+        "cursor": { "normal": { "fondo": { "Color": [0.0, 0.33, 0.99, 1.0] } } },
+        "marcador": { "normal": { "color_texto": [0.55, 0.57, 0.62, 1.0] } }
+      }
+    }
+  }
+}

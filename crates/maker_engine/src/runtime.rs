@@ -11,6 +11,7 @@ use crate::log;
 use crate::physics::{FIXED_DT, Physics};
 use crate::scene::Scene;
 use crate::scripting::{ScriptLib, apply_props};
+use crate::ui::{self, SistemaUi, WidgetUi};
 use glam::{Mat4, Quat, Vec3};
 use maker_api::{Entity, FrameInfo, HostApi, RayHit};
 use std::ffi::c_void;
@@ -35,6 +36,10 @@ pub struct Runtime {
     pub animation: Animation,
     /// Raíz del proyecto (para resolver rutas de modelos y clips).
     pub project_root: Option<std::path::PathBuf>,
+    /// Interfaz: layout, entrada, eventos y lista de dibujo.
+    pub ui: SistemaUi,
+    /// Entrada que ven los scripts (sin lo que consumió la interfaz).
+    entrada: Input,
 }
 
 /// Estado que ven las funciones del host durante una llamada a un script.
@@ -42,6 +47,7 @@ struct HostCtx<'a> {
     scene: &'a mut Scene,
     physics: &'a mut Physics,
     input: &'a Input,
+    ui: &'a mut SistemaUi,
     destroyed: Vec<EntityId>,
     source: String,
 }
@@ -56,7 +62,23 @@ impl Runtime {
     pub fn start_en(scene: &mut Scene, lib: Option<Arc<ScriptLib>>, raiz: Option<&std::path::Path>) -> Runtime {
         scene.update_transforms();
         let physics = Physics::build_en(scene, raiz);
-        let mut rt = Runtime { physics, lib, instances: Vec::new(), time: 0.0, frame: 0, accumulator: 0.0, paused: false, animation: Animation::default(), project_root: raiz.map(std::path::Path::to_path_buf) };
+        let ui = match raiz {
+            Some(r) => SistemaUi::del_proyecto(r, &crate::project::Project::open(r).map(|p| p.file.tema_ui).unwrap_or_default()),
+            None => SistemaUi::default(),
+        };
+        let mut rt = Runtime {
+            physics,
+            lib,
+            instances: Vec::new(),
+            time: 0.0,
+            frame: 0,
+            accumulator: 0.0,
+            paused: false,
+            animation: Animation::default(),
+            project_root: raiz.map(std::path::Path::to_path_buf),
+            ui,
+            entrada: Input::default(),
+        };
         let mut slots: Vec<(EntityId, Scripts)> = {
             let mut q = scene.world.query::<(&EntityId, &Scripts)>();
             q.iter().map(|(id, s)| (*id, s.clone())).collect()
@@ -104,7 +126,11 @@ impl Runtime {
         }
         let dt = dt.clamp(0.0, 0.1);
         let lib = self.lib.clone();
-        let mut ctx = HostCtx { scene, physics: &mut self.physics, input, destroyed: Vec::new(), source: String::new() };
+        // La interfaz ve la entrada primero y se queda con lo que consume.
+        self.ui.procesar_entrada(scene, input);
+        let mut entrada = std::mem::take(&mut self.entrada);
+        self.ui.filtrar(input, &mut entrada);
+        let mut ctx = HostCtx { scene, physics: &mut self.physics, input: &entrada, ui: &mut self.ui, destroyed: Vec::new(), source: String::new() };
         let api = host_api(&mut ctx);
         // Todo acceso posterior pasa por el mismo puntero que ven los scripts.
         let ctx = unsafe { &mut *(api.ctx as *mut HostCtx) };
@@ -170,7 +196,9 @@ impl Runtime {
             }
             for id in &all {
                 ctx.physics.remove_entity(*id);
+                ctx.ui.quitar_dibujo(*id);
             }
+            ctx.ui.marcar_sucio();
             ctx.scene.despawn_recursive_many(&all);
             if let Some(lib) = &lib {
                 self.instances.retain(|i| {
@@ -186,6 +214,9 @@ impl Runtime {
         ctx.scene.update_transforms();
         // Animación después de los scripts (que pueden cambiar de clip).
         self.animation.update(ctx.scene, self.project_root.as_deref(), dt, |_| true);
+        let pantalla = [input.pantalla.x, input.pantalla.y];
+        self.ui.actualizar(ctx.scene, pantalla, dt);
+        self.entrada = entrada;
         self.time += dt;
         self.frame += 1;
     }
@@ -252,6 +283,25 @@ fn host_api(ctx: &mut HostCtx) -> HostApi {
         set_shading: h_set_shading,
         play_animation: h_play_animation,
         set_animation_speed: h_set_animation_speed,
+        ui_set_text: h_ui_set_text,
+        ui_get_text: h_ui_get_text,
+        ui_set_value: h_ui_set_value,
+        ui_get_value: h_ui_get_value,
+        ui_set_visible: h_ui_set_visible,
+        ui_is_visible: h_ui_is_visible,
+        ui_set_interactable: h_ui_set_interactable,
+        ui_set_style: h_ui_set_style,
+        ui_set_image: h_ui_set_image,
+        ui_set_color: h_ui_set_color,
+        ui_set_opacity: h_ui_set_opacity,
+        ui_event: h_ui_event,
+        ui_instantiate: h_ui_instantiate,
+        ui_draw: h_ui_draw,
+        ui_rect: h_ui_rect,
+        ui_set_position: h_ui_set_position,
+        ui_set_size: h_ui_set_size,
+        ui_pointer_over: h_ui_pointer_over,
+        ui_set_theme: h_ui_set_theme,
     }
 }
 
@@ -421,6 +471,141 @@ unsafe extern "C" fn h_set_animation_speed(c: *mut c_void, e: Entity, speed: f32
     }
 }
 
+// ─────────────────────────── interfaz ───────────────────────────
+
+unsafe fn texto<'a>(p: *const u8, n: usize) -> std::borrow::Cow<'a, str> {
+    if p.is_null() || n == 0 {
+        return std::borrow::Cow::Borrowed("");
+    }
+    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(p, n) })
+}
+
+unsafe extern "C" fn h_ui_set_text(c: *mut c_void, e: Entity, p: *const u8, n: usize) {
+    let c = unsafe { cx(c) };
+    let t = unsafe { texto(p, n) };
+    c.ui.fijar_texto(c.scene, id(e), &t);
+}
+unsafe extern "C" fn h_ui_get_text(c: *mut c_void, e: Entity, buf: *mut u8, cap: usize) -> usize {
+    let c = unsafe { cx(c) };
+    let Some(w) = c.scene.get_mut::<WidgetUi>(id(e)) else { return 0 };
+    let t = w.clase.texto().unwrap_or("").as_bytes();
+    if !buf.is_null() {
+        let k = t.len().min(cap);
+        unsafe { std::ptr::copy_nonoverlapping(t.as_ptr(), buf, k) };
+    }
+    t.len()
+}
+unsafe extern "C" fn h_ui_set_value(c: *mut c_void, e: Entity, v: f32) {
+    let c = unsafe { cx(c) };
+    c.ui.cambiar_valor(c.scene, id(e), v);
+}
+unsafe extern "C" fn h_ui_get_value(c: *mut c_void, e: Entity) -> f32 {
+    let c = unsafe { cx(c) };
+    c.ui.valor(c.scene, id(e))
+}
+unsafe extern "C" fn h_ui_set_visible(c: *mut c_void, e: Entity, v: bool) {
+    let c = unsafe { cx(c) };
+    c.ui.editar_rect(c.scene, id(e), |r| r.visible = v);
+}
+unsafe extern "C" fn h_ui_is_visible(c: *mut c_void, e: Entity) -> bool {
+    let c = unsafe { cx(c) };
+    c.scene.get_mut::<ui::RectUi>(id(e)).is_some_and(|r| r.visible)
+}
+unsafe extern "C" fn h_ui_set_interactable(c: *mut c_void, e: Entity, v: bool) {
+    let c = unsafe { cx(c) };
+    c.ui.editar_rect(c.scene, id(e), |r| r.interactuable = v);
+}
+unsafe extern "C" fn h_ui_set_opacity(c: *mut c_void, e: Entity, v: f32) {
+    let c = unsafe { cx(c) };
+    c.ui.editar_rect(c.scene, id(e), |r| r.opacidad = v.clamp(0.0, 1.0));
+}
+unsafe extern "C" fn h_ui_set_style(c: *mut c_void, e: Entity, p: *const u8, n: usize) {
+    let c = unsafe { cx(c) };
+    let t = unsafe { texto(p, n) }.into_owned();
+    if !t.is_empty() && c.ui.recursos.estilo(&t).is_none() {
+        log::warn("script", format!("ui_set_style: no existe el estilo '{t}'"));
+    }
+    c.ui.editar_widget(c.scene, id(e), |w| w.estilo = t);
+}
+unsafe extern "C" fn h_ui_set_image(c: *mut c_void, e: Entity, p: *const u8, n: usize) {
+    let c = unsafe { cx(c) };
+    let t = unsafe { texto(p, n) }.into_owned();
+    c.ui.editar_widget(c.scene, id(e), |w| match &mut w.clase {
+        ui::ClaseWidget::Imagen(im) => im.imagen = t,
+        _ => w.local.estados.normal.imagen = Some(t),
+    });
+}
+unsafe extern "C" fn h_ui_set_color(c: *mut c_void, e: Entity, rgba: maker_api::Rgba) {
+    let c = unsafe { cx(c) };
+    let col = [rgba.r, rgba.g, rgba.b, rgba.a];
+    c.ui.editar_widget(c.scene, id(e), |w| match &mut w.clase {
+        ui::ClaseWidget::Texto(_) => w.local.estados.normal.color_texto = Some(col),
+        ui::ClaseWidget::Imagen(im) => im.tinte = col,
+        _ => w.local.estados.normal.fondo = Some(ui::estilo::Relleno::Color(col)),
+    });
+}
+unsafe extern "C" fn h_ui_event(c: *mut c_void, e: Entity, kind: u32) -> bool {
+    let c = unsafe { cx(c) };
+    kind < 32 && c.ui.evento(id(e), 1 << kind)
+}
+unsafe extern "C" fn h_ui_instantiate(c: *mut c_void, p: *const u8, n: usize, parent: Entity) -> Entity {
+    let c = unsafe { cx(c) };
+    let ruta = unsafe { texto(p, n) }.into_owned();
+    let Some(raiz) = c.ui.raiz().map(std::path::Path::to_path_buf) else {
+        log::warn("script", "ui_instantiate: sin proyecto");
+        return Entity::NONE;
+    };
+    let padre = if parent.is_none() {
+        let mut q = c.scene.world.query::<(&EntityId, &ui::Lienzo)>();
+        q.iter().map(|(i, _)| *i).min_by_key(|i| i.0)
+    } else {
+        Some(id(parent))
+    };
+    match ui::plantilla::PlantillaUi::cargar(&raiz.join(&ruta)) {
+        Ok(pl) => {
+            let r = pl.instanciar(c.scene, &ruta, padre);
+            c.ui.marcar_sucio();
+            r.map(|r| Entity(r.0)).unwrap_or(Entity::NONE)
+        }
+        Err(e) => {
+            log::warn("script", format!("ui_instantiate: {e}"));
+            Entity::NONE
+        }
+    }
+}
+unsafe extern "C" fn h_ui_draw(c: *mut c_void, e: Entity, cmds: *const maker_api::UiDrawCmd, n: usize) {
+    let c = unsafe { cx(c) };
+    let cmds = if cmds.is_null() || n == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(cmds, n) } };
+    c.ui.fijar_dibujo(id(e), cmds);
+}
+unsafe extern "C" fn h_ui_rect(c: *mut c_void, e: Entity) -> maker_api::UiRect {
+    let c = unsafe { cx(c) };
+    match c.ui.rect(id(e)) {
+        Some((a, b)) => maker_api::UiRect { x: a[0], y: a[1], w: b[0] - a[0], h: b[1] - a[1] },
+        None => maker_api::UiRect::default(),
+    }
+}
+unsafe extern "C" fn h_ui_set_position(c: *mut c_void, e: Entity, p: maker_api::Vec2) {
+    let c = unsafe { cx(c) };
+    c.ui.editar_rect(c.scene, id(e), |r| r.fijar_posicion([p.x, p.y]));
+}
+unsafe extern "C" fn h_ui_set_size(c: *mut c_void, e: Entity, s: maker_api::Vec2) {
+    let c = unsafe { cx(c) };
+    c.ui.editar_rect(c.scene, id(e), |r| r.fijar_tam([s.x, s.y]));
+}
+unsafe extern "C" fn h_ui_pointer_over(c: *mut c_void) -> bool {
+    unsafe { cx(c) }.ui.puntero_sobre_ui()
+}
+unsafe extern "C" fn h_ui_set_theme(c: *mut c_void, p: *const u8, n: usize) {
+    let c = unsafe { cx(c) };
+    let t = unsafe { texto(p, n) }.into_owned();
+    if !t.is_empty() && !c.ui.recursos.temas.contains_key(&t) {
+        log::warn("script", format!("ui_set_theme: no existe el tema '{t}'"));
+    }
+    c.ui.tema = Some(t);
+    c.ui.marcar_sucio();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -484,7 +669,84 @@ mod tests {
         }
     }
 
-    maker_api::script_library!(TEST_LIB; Spinner, Spawner, Panicker, Toonify, Dancer);
+    #[derive(Default)]
+    struct Hud {
+        clics: i32,
+        juego_vio_clic: bool,
+    }
+    impl Script for Hud {
+        fn update(&mut self, ctx: &mut Ctx) {
+            let (Some(t), Some(b), Some(barra), Some(radar)) = (ctx.ui("Puntos"), ctx.ui("Botón"), ctx.ui("Vida"), ctx.ui("Radar")) else {
+                panic!("faltan elementos");
+            };
+            if ctx.ui_clicked(b) {
+                self.clics += 1;
+            }
+            ctx.ui_set_text(t, &format!("Puntos: {}", self.clics));
+            assert_eq!(ctx.ui_text(t), format!("Puntos: {}", self.clics));
+            ctx.ui_set_value(barra, 0.25);
+            assert_eq!(ctx.ui_value(barra), 0.25);
+            ctx.ui_draw(radar, |p| {
+                p.circle(10.0, 10.0, 5.0, [1.0, 0.0, 0.0, 1.0]);
+                p.text(0.0, 0.0, 0.0, 0.0, 12.0, "N", [1.0; 4]);
+            });
+            self.juego_vio_clic |= ctx.mouse_down(MouseButton::Left);
+            if self.clics == 1 && !ctx.ui_visible(t) {
+                panic!("visible");
+            }
+            if self.clics >= 1 {
+                ctx.ui_set_style(b, "");
+                ctx.ui_set_visible(radar, false);
+                let r = ctx.ui_rect(b);
+                assert_eq!((r.w, r.h), (200.0, 50.0));
+                ctx.log(format!("hud: clics={} juego_vio_clic={}", self.clics, self.juego_vio_clic));
+            }
+        }
+    }
+
+    maker_api::script_library!(TEST_LIB; Spinner, Spawner, Panicker, Toonify, Dancer, Hud);
+
+    #[test]
+    fn scripts_use_the_ui_through_abi_and_ui_consumes_clicks() {
+        use crate::ui::*;
+        let lib = Arc::new(ScriptLib::from_static(&TEST_LIB).unwrap());
+        let mut s = Scene::starter();
+        let l = s.spawn("Lienzo");
+        s.insert(l, Lienzo { resolucion: [800.0, 600.0], ..Default::default() });
+        let hijo = |s: &mut Scene, n: &str, t: TipoWidget, r: RectUi| {
+            let e = s.spawn(n);
+            s.insert(e, r);
+            s.insert(e, WidgetUi::nuevo(t));
+            s.set_parent(e, Some(l), false);
+            e
+        };
+        let txt = hijo(&mut s, "Puntos", TipoWidget::Texto, RectUi::anclado([0.0, 0.0], [0.0, 0.0], [10.0, 10.0], [200.0, 40.0]));
+        hijo(&mut s, "Botón", TipoWidget::Boton, RectUi::centrado(200.0, 50.0));
+        let barra = hijo(&mut s, "Vida", TipoWidget::Barra, RectUi::anclado([0.0, 1.0], [0.0, 1.0], [10.0, -40.0], [300.0, 20.0]));
+        let radar = hijo(&mut s, "Radar", TipoWidget::Personalizado, RectUi::anclado([1.0, 0.0], [1.0, 0.0], [-110.0, 10.0], [100.0, 100.0]));
+        s.insert(l, Scripts(vec![ScriptSlot { name: "Hud".into(), enabled: true, ..Default::default() }]));
+        let mut rt = Runtime::start(&mut s, Some(lib));
+        let mut input = Input::default();
+        input.pantalla = glam::Vec2::new(800.0, 600.0);
+        rt.tick(&mut s, &input, 1.0 / 60.0);
+        assert!(rt.ui.lista.quads.len() > 3, "la interfaz se dibuja tras el primer fotograma");
+        // Clic en el botón (centro de la pantalla).
+        input.mouse_pos = glam::Vec2::new(400.0, 300.0);
+        rt.tick(&mut s, &input, 1.0 / 60.0);
+        input.mouse_buttons[0] = true;
+        rt.tick(&mut s, &input, 1.0 / 60.0);
+        input.mouse_buttons[0] = false;
+        rt.tick(&mut s, &input, 1.0 / 60.0);
+        assert_eq!(s.get::<WidgetUi>(txt).unwrap().clase.texto(), Some("Puntos: 1"));
+        assert_eq!(s.get::<WidgetUi>(barra).unwrap().clase.valor(), 0.25);
+        assert!(!s.get::<RectUi>(radar).unwrap().visible);
+        assert!(log::since(0).iter().any(|e| e.text.contains("hud: clics=1 juego_vio_clic=false")), "el clic sobre la interfaz no llega al juego");
+        // Fuera de la interfaz el juego sí ve el ratón.
+        input.mouse_pos = glam::Vec2::new(400.0, 500.0);
+        input.mouse_buttons[0] = true;
+        rt.tick(&mut s, &input, 1.0 / 60.0);
+        assert!(log::since(0).iter().any(|e| e.text.contains("juego_vio_clic=true")));
+    }
 
     #[test]
     fn scripts_drive_animator_through_abi() {

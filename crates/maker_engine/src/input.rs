@@ -9,12 +9,17 @@ pub struct Input {
     pressed: [bool; Key::COUNT as usize],
     pub mouse_buttons: [bool; 3],
     pub mouse_delta: Vec2,
+    /// Posición del ratón en píxeles de la vista del juego (y hacia abajo).
     pub mouse_pos: Vec2,
+    /// Tamaño de la vista del juego en píxeles.
+    pub pantalla: Vec2,
+    /// Texto escrito en este fotograma (campos de texto de la interfaz).
+    pub texto: String,
 }
 
 impl Default for Input {
     fn default() -> Self {
-        Self { down: [false; Key::COUNT as usize], pressed: [false; Key::COUNT as usize], mouse_buttons: [false; 3], mouse_delta: Vec2::ZERO, mouse_pos: Vec2::ZERO }
+        Self { down: [false; Key::COUNT as usize], pressed: [false; Key::COUNT as usize], mouse_buttons: [false; 3], mouse_delta: Vec2::ZERO, mouse_pos: Vec2::ZERO, pantalla: Vec2::ZERO, texto: String::new() }
     }
 }
 
@@ -36,9 +41,30 @@ impl Input {
     pub fn end_frame(&mut self) {
         self.pressed = [false; Key::COUNT as usize];
         self.mouse_delta = Vec2::ZERO;
+        self.texto.clear();
+    }
+    /// Copia sin reservar memoria (reutiliza el texto).
+    pub fn copiar_de(&mut self, o: &Input) {
+        self.down = o.down;
+        self.pressed = o.pressed;
+        self.mouse_buttons = o.mouse_buttons;
+        self.mouse_delta = o.mouse_delta;
+        self.mouse_pos = o.mouse_pos;
+        self.pantalla = o.pantalla;
+        self.texto.clear();
+        self.texto.push_str(&o.texto);
+    }
+    /// Suelta todas las teclas (las consume la interfaz).
+    pub fn soltar_teclas(&mut self) {
+        self.down = [false; Key::COUNT as usize];
+        self.pressed = [false; Key::COUNT as usize];
+        self.texto.clear();
     }
     pub fn release_all(&mut self) {
+        let (pos, pantalla) = (self.mouse_pos, self.pantalla);
         *self = Input::default();
+        self.mouse_pos = pos;
+        self.pantalla = pantalla;
     }
 }
 

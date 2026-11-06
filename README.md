@@ -49,7 +49,13 @@ scripts de cada juego.
 - **Modelos de sombreado** por material: PBR, **toon / cel** al estilo de
   *Breath of the Wild* (bandas duras, sombra tintada, luz de borde, brillo en
   banda y contorno de casco invertido), sin luz y plumilla (rayado a tinta).
-  Ver [docs/SHADERS.md](docs/SHADERS.md).
+  **Sombreado global** para forzar un modelo en toda la escena, con
+  excepciones por objeto. Ver [docs/SHADERS.md](docs/SHADERS.md).
+- **Posprocesado** por escena: pila ordenada de efectos (tonemapping ACES/AgX,
+  corrección de color con LUT, bloom, viñeta, aberración cromática, grano,
+  retro, enfoque, FXAA, contorno en pantalla, niebla de altura, profundidad de
+  campo) y efectos WGSL propios en `shaders/post/` con parámetros en el
+  Inspector y recarga en caliente. Sin efectos no cuesta ningún pase.
 - **Scripting en Rust** (`maker_api`): cada proyecto tiene un crate `scripts/`
   que el editor compila (F7) y recarga en caliente; propiedades editables desde
   el Inspector; los pánicos se atrapan y salen en la consola. Ver

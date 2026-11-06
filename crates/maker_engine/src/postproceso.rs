@@ -486,12 +486,17 @@ pub fn free_name(dir: &std::path::Path, base: &str) -> String {
     name
 }
 
-/// Rutas de los efectos propios que usan las escenas (para exportar).
-pub fn custom_shaders_used<'a>(envs: impl IntoIterator<Item = &'a crate::scene::Environment>) -> Vec<String> {
+/// Archivos del proyecto que usa el posprocesado de las escenas (efectos
+/// propios y LUT), para exportarlos.
+pub fn post_files_used<'a>(envs: impl IntoIterator<Item = &'a crate::scene::Environment>) -> Vec<String> {
     let mut v: Vec<String> = envs
         .into_iter()
         .flat_map(|e| e.post.iter())
-        .filter_map(|p| if let PostKind::Custom(c) = &p.kind { Some(c.path.clone()) } else { None })
+        .filter_map(|p| match &p.kind {
+            PostKind::Custom(c) => Some(c.path.clone()),
+            PostKind::ColorGrading(g) => Some(g.lut.clone()),
+            _ => None,
+        })
         .filter(|p| !p.is_empty())
         .collect();
     v.sort();
@@ -589,7 +594,9 @@ mod tests {
         let json = serde_json::to_string(&env).unwrap();
         let back: crate::scene::Environment = serde_json::from_str(&json).unwrap();
         assert_eq!(back, env);
-        assert_eq!(custom_shaders_used([&env, &back]), vec!["shaders/post/crt.wgsl".to_string()]);
+        assert_eq!(post_files_used([&env, &back]), vec!["shaders/post/crt.wgsl".to_string()]);
+        env.post.push(fx(PostKind::ColorGrading(ColorGrading { lut: "assets/lut.png".into(), ..Default::default() })));
+        assert_eq!(post_files_used([&env]), vec!["assets/lut.png".to_string(), "shaders/post/crt.wgsl".to_string()]);
         // Escena anterior: sin pila ni sombreado global.
         let old = r#"{"sky_top":[0.1,0.2,0.3],"sky_horizon":[1,1,1],"ground":[0,0,0],"ambient_intensity":0.5,"fog_color":[1,1,1],"fog_density":0.0,"exposure":1.2,"gravity":[0,-9.81,0]}"#;
         let e: crate::scene::Environment = serde_json::from_str(old).unwrap();

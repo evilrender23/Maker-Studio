@@ -13,6 +13,7 @@ mod hub;
 mod panels;
 mod icons;
 mod pixel_icons;
+mod postproceso_ui;
 mod prefs;
 mod theme;
 mod titlebar;

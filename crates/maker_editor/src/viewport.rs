@@ -48,6 +48,7 @@ fn toolbar(ed: &mut Editor, ui: &mut egui::Ui) {
         ui.separator();
         ui.toggle_value(&mut ed.show_grid, "Rejilla");
         ui.toggle_value(&mut ed.shadows, "Sombras");
+        ui.toggle_value(&mut ed.post_fx, "Posprocesado").on_hover_text("Efectos de posprocesado de la escena");
         if ed.is_playing() {
             ui.separator();
             ui.toggle_value(&mut ed.show_game_view, "Cámara del juego").on_hover_text("Ver desde la cámara principal o desde la del editor");
@@ -89,7 +90,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, rs: &egui_wgpu::RenderState) {
     };
     let editing_view = game_cam.is_none();
 
-    let mut opts = RenderOptions { show_grid: ed.show_grid && editing_view, shadows: ed.shadows, ..Default::default() };
+    let mut opts = RenderOptions { show_grid: ed.show_grid && editing_view, shadows: ed.shadows, post: ed.post_fx, ..Default::default() };
     if editing_view && let Some(s) = ed.selection {
         let h = ed.scene.hierarchy();
         let mut stack = vec![s];

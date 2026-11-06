@@ -653,7 +653,7 @@ mod tests {
         assert_eq!(scene.get::<MeshRenderer>(sphere).unwrap().material.shading, ShadingModel::Hatching);
         assert_eq!(p2.scenes(), vec!["scenes/biblioteca.mscene".to_string(), "scenes/main.mscene".to_string()]);
         // Los efectos propios de ejemplo existen y la escena los referencia.
-        let used = crate::postproceso::custom_shaders_used([&scene.env]);
+        let used = crate::postproceso::post_files_used([&scene.env]);
         assert_eq!(used.len(), 2);
         assert!(used.iter().all(|u| p2.root.join(u).is_file()), "{used:?}");
         // El escaparate usa la biblioteca integrada y un personaje animado.

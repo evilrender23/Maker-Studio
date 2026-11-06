@@ -381,7 +381,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, rs: &egui_wgpu::RenderState) {
     }
 
     orientation_widget(&painter, rect, &rview.view);
-    if let Some(r) = estante {
+    if let Some(r) = estante.filter(|_| esculpiendo) {
         crate::esculpir::estante(ed, ui, r);
     }
     if esculpiendo {

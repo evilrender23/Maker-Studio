@@ -32,6 +32,8 @@ pub enum Modo {
 pub const CARPETA: &str = "assets/esculturas";
 /// Vértices de la base al esculpir una primitiva.
 const BASE_VERTICES: usize = 60_000;
+/// Celdas por arista de las esferas de «Nueva escultura».
+pub const RESOLUCIONES: [u32; 4] = [64, 128, 256, 512];
 /// Más allá de esto «Subdividir» no sigue (cada paso multiplica por cuatro).
 const MAX_SUBDIVIDIR: usize = 4_000_000;
 /// Alto del estante de pinceles.
@@ -82,11 +84,13 @@ pub struct Esculpir {
     /// Cantidad de las operaciones de malla completa (0..100).
     pub cantidad: f32,
     presion: f32,
+    /// Resolución pedida para la próxima esfera nueva.
+    pub base: Option<u32>,
 }
 
 impl Default for Esculpir {
     fn default() -> Self {
-        Self { herramienta: ToolSettings::default(), sesion: None, guardada: None, alambre: false, emergente: None, cantidad: 30.0, presion: 1.0 }
+        Self { herramienta: ToolSettings::default(), sesion: None, guardada: None, alambre: false, emergente: None, cantidad: 30.0, presion: 1.0, base: None }
     }
 }
 
@@ -123,7 +127,13 @@ pub fn entrar(ed: &mut Editor) {
     };
     let t0 = std::time::Instant::now();
     let sesion = match &mr.mesh {
-        MeshSource::Primitive(p) => Sesion::new(id, Sculpt::from_mesh(primitives::sculptable(*p, BASE_VERTICES))),
+        MeshSource::Primitive(p) => {
+            let base = match (ed.esculpir.base.take(), p) {
+                (Some(res), PrimitiveShape::Sphere) => primitives::quad_sphere(res, 0.5),
+                _ => primitives::sculptable(*p, BASE_VERTICES),
+            };
+            Sesion::new(id, Sculpt::from_mesh(base))
+        }
         MeshSource::Model(rel) => {
             let full = biblioteca::resolve(rel, Some(&ed.project.root));
             let previa = ed.esculpir.guardada.take().filter(|(r, t, s)| r == rel && s.entidad == id && *t == fecha(&full));

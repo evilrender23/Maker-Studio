@@ -173,6 +173,8 @@ struct Grab {
     weights: Vec<f32>,
     mats: Vec<Mat3>,
     leaves: Vec<u32>,
+    /// Desplazamiento de cada copia (reutilizado entre actualizaciones).
+    deltas: Vec<Vec3>,
 }
 
 pub struct Sculpt {
@@ -706,7 +708,7 @@ impl Sculpt {
         let mut xf = std::mem::take(&mut self.sc.xforms);
         opts.symmetry.transforms(&mut xf);
         let copies = xf.len();
-        let mut g = Grab { verts: Vec::new(), orig: Vec::new(), weights: Vec::new(), mats: xf.clone(), leaves: Vec::new() };
+        let mut g = Grab { verts: Vec::new(), orig: Vec::new(), weights: Vec::new(), mats: xf.clone(), leaves: Vec::new(), deltas: Vec::with_capacity(copies) };
         for (ki, m) in xf.iter().enumerate() {
             let d = dab.transformed(m, opts.center);
             let mut leaves = std::mem::take(&mut self.sc.leaves);
@@ -753,9 +755,11 @@ impl Sculpt {
 
     /// Mueve lo agarrado: `delta` es el desplazamiento de la copia original (espacio local).
     pub fn grab_update(&mut self, delta: Vec3) {
-        let Some(g) = &self.grab else { return };
+        let Some(g) = &mut self.grab else { return };
         let copies = g.mats.len();
-        let ds: Vec<Vec3> = g.mats.iter().map(|m| *m * delta).collect();
+        g.deltas.clear();
+        g.deltas.extend(g.mats.iter().map(|m| *m * delta));
+        let (g, ds) = (&*g, &g.deltas);
         let pp = Ptr::new(&mut self.mesh.pos);
         g.verts.par_iter().enumerate().for_each(|(i, &v)| {
             let mut p = g.orig[i];

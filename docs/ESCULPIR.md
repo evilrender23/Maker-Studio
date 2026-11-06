@@ -9,7 +9,8 @@ vendrá después está en [investigacion/SCULPTFORGE.md](investigacion/SCULPTFOR
 
 - Selecciona una entidad con malla y pulsa **Tab**, o **Esculpir** al principio de la barra
   del visor. Tab (u **Objeto**) vuelve al modo Objeto.
-- **Crear → Nueva escultura** crea una esfera y entra directamente.
+- **Crear → Nueva escultura** crea una esfera de la resolución elegida (de unos 25 000 a 1,6
+  millones de vértices) y entra directamente.
 - Al entrar:
   - una **primitiva** se convierte en una base esculpible de unos 60 000 vértices: la esfera,
     el cubo y el plano con celdas regulares; el cilindro, el cono, la cápsula y el toro
@@ -185,14 +186,17 @@ Solo funcionan con el modo activo y sin escribir en un campo.
 Cada toque trabaja por grupos de 128 a 256 triángulos en paralelo (un hilo por grupo, sin
 reservar memoria). Solo se recalculan las normales y las cajas de lo tocado, y a la GPU solo
 suben los rangos de vértices cambiados. En una esfera de un millón de vértices (prueba
-`bench_dab_on_million_vertex_sphere`, perfil de pruebas):
+`bench_dab_on_million_vertex_sphere`, perfil de pruebas, medido en un procesador de 16 hilos
+con la prueba sola; con el resto de pruebas a la vez sale de 3 a 4 veces más):
 
-| Toque | Tiempo (con su copia en espejo) |
-|---|---|
-| Estándar, radio pequeño (~12 000 vértices) | ~0,3 ms |
-| Estándar, radio medio (~67 000 vértices) | ~0,5 ms |
-| Suavizar Taubin, radio medio | ~3 ms |
-| Estándar sobre ~400 000 vértices | ~4 ms |
+| Toque (con su copia en espejo X) | Vértices por copia | Tiempo |
+|---|---|---|
+| Estándar, radio pequeño | ~12 000 | ~0,1 ms |
+| Estándar, radio medio | ~67 000 | ~0,3 ms |
+| Suavizar Taubin, radio medio | ~65 000 | ~0,5 ms |
+| Estándar, radio grande | ~380 000 | ~1 ms |
+
+Preparar esa esfera al entrar (BVH, adyacencia y normales) lleva unos 0,35 s.
 
 ## Límites de esta fase
 

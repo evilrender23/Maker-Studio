@@ -59,9 +59,16 @@ pub fn create_menu(ui: &mut Ui) -> Option<Create> {
     if ui.button("Cámara").clicked() {
         out = Some(Create::Camera);
     }
-    if ui.button("Nueva escultura").on_hover_text("Una esfera lista para esculpir").clicked() {
-        out = Some(Create::Escultura);
-    }
+    ui.menu_button("Nueva escultura", |ui| {
+        // Esferas de cubo: 6·n² + 2 vértices.
+        for res in crate::esculpir::RESOLUCIONES {
+            let v = 6 * res as u64 * res as u64 + 2;
+            let texto = if v >= 1_000_000 { format!("Esfera · {:.1} M vértices", v as f64 / 1e6) } else { format!("Esfera · {} k vértices", v / 1000) };
+            if ui.button(texto).clicked() {
+                out = Some(Create::Escultura(res));
+            }
+        }
+    });
     ui.menu_button("Interfaz", |ui| {
         for c in CrearUi::MENU {
             let img = crate::icons::image(ui.ctx(), icono_crear_ui(c), theme::GREEN);

@@ -633,7 +633,8 @@ impl Editor {
                 }
                 self.scene.insert(id, MeshRenderer::primitive(s));
             }
-            Create::Escultura => {
+            Create::Escultura(res) => {
+                self.esculpir.base = Some(res);
                 t.translation.y = t.translation.y.max(0.5);
                 self.scene.insert(id, MeshRenderer::primitive(PrimitiveShape::Sphere));
             }
@@ -661,7 +662,7 @@ impl Editor {
         self.scene.update_transforms();
         self.selection = Some(id);
         self.commit(&format!("Crear {name}"));
-        if what == Create::Escultura {
+        if let Create::Escultura(_) = what {
             crate::esculpir::salir(self);
             crate::esculpir::entrar(self);
         }
@@ -1241,8 +1242,8 @@ pub enum Create {
     DirectionalLight,
     PointLight,
     Camera,
-    /// Esfera lista para esculpir (entra en el modo Esculpir).
-    Escultura,
+    /// Esfera lista para esculpir con estas celdas por arista de cubo (entra en el modo).
+    Escultura(u32),
 }
 
 impl Create {
@@ -1254,7 +1255,7 @@ impl Create {
             Create::DirectionalLight => "Luz direccional",
             Create::PointLight => "Luz puntual",
             Create::Camera => "Cámara",
-            Create::Escultura => "Escultura",
+            Create::Escultura(_) => "Escultura",
         }
     }
 }

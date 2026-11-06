@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/maker_api", "crates/maker_engine", "crates/maker_render", "crates/maker_editor", "crates/maker_player"]
+members = ["crates/maker_api", "crates/maker_engine", "crates/maker_render", "crates/maker_sculpt", "crates/maker_editor", "crates/maker_player"]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,6 +13,7 @@ repository = "https://github.com/EvilRender23/Maker-Studio"
 maker_api = { path = "crates/maker_api" }
 maker_engine = { path = "crates/maker_engine" }
 maker_render = { path = "crates/maker_render" }
+maker_sculpt = { path = "crates/maker_sculpt" }
 glam = { version = "0.33", features = ["serde", "bytemuck"] }
 hecs = "0.11"
 rapier3d = "0.36"
@@ -28,6 +29,7 @@ egui-wgpu = "0.37"
 log = "0.4"
 env_logger = "0.11"
 pollster = "0.4"
+rayon = "1.12"
 
 [profile.release]
 opt-level = 3
@@ -39,6 +41,10 @@ panic = "unwind"
 opt-level = 1
 
 [profile.dev.package."*"]
+opt-level = 3
+
+# El esculpido mueve millones de vértices por trazo: optimizado también en `dev`.
+[profile.dev.package.maker_sculpt]
 opt-level = 3
 
 # Para iterar (capturas, pruebas manuales): optimizado pero sin LTO e incremental,

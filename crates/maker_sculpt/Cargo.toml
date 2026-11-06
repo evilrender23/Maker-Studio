@@ -1,0 +1,13 @@
+[package]
+name = "maker_sculpt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+maker_engine.workspace = true
+glam.workspace = true
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true

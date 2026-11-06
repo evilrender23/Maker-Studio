@@ -13,6 +13,7 @@ mod gizmo;
 mod hub;
 mod panels;
 mod icons;
+mod importar;
 mod pixel_icons;
 mod postproceso_ui;
 mod prefs;

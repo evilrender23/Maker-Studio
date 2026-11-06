@@ -1185,38 +1185,6 @@ pub fn bottom(ed: &mut Editor, ui: &mut Ui, rs: &egui_wgpu::RenderState) {
 }
 
 
-pub fn import_model(ed: &mut Editor) {
-    let raw = ed.import_path.trim().trim_matches(['"', '\'']).trim_start_matches("file://").to_string();
-    let src = if let Some(rest) = raw.strip_prefix("~/") { std::env::var("HOME").map(|h| format!("{h}/{rest}")).unwrap_or(raw.clone()) } else { raw.clone() };
-    let src = std::path::PathBuf::from(src);
-    let Some(name) = src.file_name() else {
-        log::error("editor", "ruta vacía");
-        return;
-    };
-    let dst_dir = ed.project.root.join("assets/models");
-    let _ = std::fs::create_dir_all(&dst_dir);
-    let dst = dst_dir.join(name);
-    match std::fs::copy(&src, &dst) {
-        Ok(_) => {
-            // Un .gltf puede referenciar un .bin y texturas junto a él.
-            if src.extension().is_some_and(|e| e == "gltf")
-                && let Ok(txt) = std::fs::read_to_string(&src)
-            {
-                for part in txt.split('"').filter(|s| s.ends_with(".bin") || s.ends_with(".png") || s.ends_with(".jpg")) {
-                    if let Some(dir) = src.parent() {
-                        let _ = std::fs::copy(dir.join(part), dst_dir.join(part));
-                    }
-                }
-            }
-            let rel = ed.project.relative(&dst);
-            log::info("editor", format!("modelo importado: {rel}"));
-            ed.import_path.clear();
-            ed.add_model(&rel);
-        }
-        Err(e) => log::error("editor", format!("{}: {e}", src.display())),
-    }
-}
-
 fn console(ed: &mut Editor, ui: &mut Ui) {
     let entries = log::since(0);
     ed.console_seen = entries.len();

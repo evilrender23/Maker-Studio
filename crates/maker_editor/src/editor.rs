@@ -165,7 +165,7 @@ pub struct Editor {
     /// Comprobar las fuentes en el siguiente fotograma (p. ej. al guardar un script).
     comprobar_fuentes: bool,
     pub new_script_name: String,
-    pub import_path: String,
+    pub importador: crate::importar::Importador,
     pub pending_reload_after_play: bool,
     /// Escena modificada desde el último guardado.
     pub dirty: bool,
@@ -248,7 +248,7 @@ impl Editor {
             src_huella: None,
             comprobar_fuentes: true,
             new_script_name: String::new(),
-            import_path: String::new(),
+            importador: Default::default(),
             pending_reload_after_play: false,
             dirty: false,
             pending_edit: None,

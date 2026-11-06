@@ -89,6 +89,23 @@ pub struct ContenidoUi {
     renderer: Option<SceneRenderer>,
 }
 
+impl ContenidoUi {
+    /// Carpeta abierta, relativa a la raíz.
+    pub fn carpeta(&self) -> &str {
+        &self.carpeta
+    }
+
+    /// Abre la carpeta de `p` y lo selecciona (tras importarlo).
+    pub fn mostrar(&mut self, raiz: &Path, p: &Path) {
+        if let Some(d) = p.parent() {
+            self.carpeta = relativa(raiz, d);
+        }
+        self.buscar.clear();
+        self.tipo = None;
+        self.seleccion = Some(p.to_path_buf());
+    }
+}
+
 /// Carpetas del proyecto (relativas), sin ocultas, `target` ni `export`, en orden.
 fn carpetas(raiz: &Path) -> Vec<String> {
     fn rec(raiz: &Path, d: &Path, out: &mut Vec<String>) {
@@ -208,6 +225,7 @@ enum Accion {
 
 pub fn show(ed: &mut Editor, ui: &mut Ui) {
     let raiz = ed.project.root.clone();
+    ed.importador.rect_contenido = ui.max_rect();
     let ctx = ui.ctx().clone();
     barra(ed, ui);
     ui.add_space(4.0);
@@ -385,14 +403,8 @@ fn barra(ed: &mut Editor, ui: &mut Ui) {
         })
         .response
         .on_hover_text(format!("Efecto de posprocesado WGSL en {}", maker_engine::postproceso::CUSTOM_DIR));
-        ui.menu_button("Importar modelo", |ui| {
-            ui.label("Ruta de un .gltf / .glb:");
-            ui.add(egui::TextEdit::singleline(&mut ed.import_path).desired_width(320.0));
-            if ui.button("Importar").clicked() {
-                crate::panels::import_model(ed);
-                ui.close();
-            }
-        });
+        let destino = ed.project.root.join(&ed.contenido.carpeta);
+        crate::importar::menu(ed, ui, destino);
         if ui.button("Abrir carpeta").clicked() {
             let d = ed.project.root.join(&ed.contenido.carpeta);
             let _ = std::process::Command::new(if cfg!(windows) { "explorer" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" }).arg(d).spawn();

@@ -256,6 +256,7 @@ impl eframe::App for MakerApp {
             return;
         };
 
+        crate::importar::tick(ed, &ctx);
         ed.frame_times.push(dt);
         if ed.frame_times.len() > 60 {
             ed.frame_times.remove(0);

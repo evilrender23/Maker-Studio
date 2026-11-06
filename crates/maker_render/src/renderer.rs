@@ -2444,7 +2444,7 @@ pub(crate) mod tests {
         let diff = |a: [u8; 3], b: [u8; 3]| a.iter().zip(&b).map(|(x, y)| (*x as i32 - *y as i32).abs()).max().unwrap();
 
         let mut sc = Sculpt::from_mesh(primitives::quad_sphere(32, 0.5));
-        r.sculpt_begin(eid, &sc.to_model());
+        r.sculpt_begin(eid, &sc.render_model());
         assert_eq!(r.sculpt_entity(), Some(eid));
         let a = render(&mut r);
         // Radio 0,5 a 3 m con 40°: ~29 px. Justo fuera del borde derecho e izquierdo.

@@ -1061,8 +1061,19 @@ impl Sculpt {
         out
     }
 
-    /// Modelo con los vértices de render (costuras, UV, colores y materiales originales).
+    /// Modelo con los vértices de render (costuras, UV, colores y materiales originales), con
+    /// tangentes: para guardar.
     pub fn to_model(&self) -> ModelData {
+        self.model_data(true)
+    }
+
+    /// Lo mismo sin calcular tangentes que falten: vértice a vértice igual que el mapa de
+    /// render (lo que sube la GPU y reescriben los rangos sucios).
+    pub fn render_model(&self) -> ModelData {
+        self.model_data(false)
+    }
+
+    fn model_data(&self, tangents: bool) -> ModelData {
         let m = &self.mesh;
         let rm = &m.render;
         let s = m.pos.len();
@@ -1070,7 +1081,7 @@ impl Sculpt {
         let rn = rm.len();
         let positions: Vec<Vec3> = (0..rn).map(|r| m.pos[src(r)]).collect();
         let normals: Vec<Vec3> = (0..rn).map(|r| m.nrm[src(r)]).collect();
-        let tangents = if rm.tangents.len() == rn {
+        let tangents_v = if rm.tangents.len() == rn {
             (0..rn)
                 .map(|r| {
                     let n = normals[r];
@@ -1082,8 +1093,8 @@ impl Sculpt {
         } else {
             Vec::new()
         };
-        let mut mesh = MeshData { positions, normals, uvs: rm.uvs.clone(), tangents, indices: rm.indices.clone(), colors: rm.colors.clone(), joints: Vec::new(), weights: Vec::new() };
-        if mesh.tangents.is_empty() {
+        let mut mesh = MeshData { positions, normals, uvs: rm.uvs.clone(), tangents: tangents_v, indices: rm.indices.clone(), colors: rm.colors.clone(), joints: Vec::new(), weights: Vec::new() };
+        if tangents && mesh.tangents.is_empty() {
             // Sin tangentes, quien lo cargue las calcularía (y podría duplicar vértices).
             mesh.compute_tangents();
         }

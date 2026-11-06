@@ -128,6 +128,72 @@ pub fn icosphere(level: u32, radius: f32) -> MeshData {
     finish(m)
 }
 
+/// Divide cada triángulo en cuatro por los puntos medios de sus aristas (atributos
+/// promediados). Las costuras dan puntos medios repetidos en la misma posición, que se sueldan
+/// al esculpir.
+pub fn subdivide(m: &MeshData) -> MeshData {
+    let n = m.positions.len();
+    let mut out = MeshData {
+        positions: m.positions.clone(),
+        normals: if m.normals.len() == n { m.normals.clone() } else { Vec::new() },
+        uvs: if m.uvs.len() == n { m.uvs.clone() } else { vec![Vec2::ZERO; n] },
+        colors: if m.colors.len() == n { m.colors.clone() } else { Vec::new() },
+        ..Default::default()
+    };
+    let mut mid: HashMap<(u32, u32), u32> = HashMap::with_capacity(m.indices.len());
+    let mut get = |a: u32, b: u32, out: &mut MeshData| -> u32 {
+        *mid.entry((a.min(b), a.max(b))).or_insert_with(|| {
+            let (a, b) = (a as usize, b as usize);
+            out.positions.push((out.positions[a] + out.positions[b]) * 0.5);
+            if !out.normals.is_empty() {
+                out.normals.push((out.normals[a] + out.normals[b]).normalize_or(Vec3::Y));
+            }
+            out.uvs.push((out.uvs[a] + out.uvs[b]) * 0.5);
+            if !out.colors.is_empty() {
+                let (x, y) = (out.colors[a], out.colors[b]);
+                out.colors.push(std::array::from_fn(|i| ((x[i] as u16 + y[i] as u16) / 2) as u8));
+            }
+            (out.positions.len() - 1) as u32
+        })
+    };
+    let mut idx = Vec::with_capacity(m.indices.len() * 4);
+    for t in m.indices.chunks_exact(3) {
+        let (a, b, c) = (t[0], t[1], t[2]);
+        let ab = get(a, b, &mut out);
+        let bc = get(b, c, &mut out);
+        let ca = get(c, a, &mut out);
+        idx.extend_from_slice(&[a, ab, ca, b, bc, ab, c, ca, bc, ab, bc, ca]);
+    }
+    out.indices = idx;
+    if out.normals.len() != out.positions.len() {
+        out.compute_normals();
+    }
+    out
+}
+
+/// Base esculpible de una primitiva del motor: la esfera, el cubo y el plano se generan con
+/// celdas regulares; el resto se subdivide hasta tener al menos `min_vertices` vértices.
+pub fn sculptable(shape: maker_engine::components::PrimitiveShape, min_vertices: usize) -> MeshData {
+    use maker_engine::components::PrimitiveShape as P;
+    // Celdas por arista para llegar a los vértices pedidos.
+    let per_face = |faces: f32| ((min_vertices as f32 / faces).sqrt().ceil() as u32).max(2);
+    match shape {
+        P::Sphere => quad_sphere(per_face(6.0), 0.5),
+        P::Cube => cube(per_face(6.0)),
+        P::Plane => plane(per_face(1.0)),
+        other => {
+            let mut m = MeshData::primitive(other);
+            m.tangents.clear();
+            // Cuenta los vértices ya soldados (las costuras repiten posiciones).
+            let welded = |m: &MeshData| m.positions.iter().map(|p| p.to_array().map(f32::to_bits)).collect::<std::collections::HashSet<_>>().len();
+            while welded(&m) < min_vertices {
+                m = subdivide(&m);
+            }
+            m
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,6 +225,25 @@ mod tests {
                 let q = Vec3::new(-p.x, p.y, p.z);
                 assert!(m.positions.iter().any(|r| r.distance(q) < 1e-5), "{p}");
             }
+        }
+    }
+
+    #[test]
+    fn subdivide_and_sculptable_bases() {
+        use maker_engine::components::PrimitiveShape;
+        let c = cube(1);
+        let s = subdivide(&c);
+        assert_eq!(s.indices.len(), c.indices.len() * 4);
+        closed_and_outward(&s);
+        for shape in PrimitiveShape::ALL {
+            let m = sculptable(shape, 5000);
+            let sc = crate::Sculpt::from_mesh(m.clone());
+            assert!(sc.vertex_count() >= 5000 * 9 / 10, "{shape:?}: {}", sc.vertex_count());
+            assert!(sc.vertex_count() < 5000 * 5, "{shape:?}: {}", sc.vertex_count());
+            // La forma no cambia de tamaño.
+            let b = m.aabb();
+            let o = MeshData::primitive(shape).aabb();
+            assert!((b.size() - o.size()).length() < 0.05, "{shape:?}");
         }
     }
 

@@ -36,18 +36,56 @@ scripts de cada juego.
 - **Tema claro** de Hermes Agent Desktop (colores, radios y paleta de código
   extraídos de su CSS; tabla en `crates/maker_editor/src/theme.rs`).
 
-## Compilar y ejecutar
+## Instalación
 
-Requisitos: Rust estable reciente (edición 2024) y una GPU con Vulkan, Metal o
-DirectX 12 (OpenGL como último recurso). Los scripts de los proyectos se
-compilan con el mismo `cargo`.
+Un solo comando compila el motor, el editor y el reproductor y los instala en
+el sistema. Si falta algo (Rust 1.95+, un compilador de C y Git), pregunta
+antes de instalarlo. Rust se queda instalado porque el editor lo usa para
+compilar los scripts de cada proyecto.
+
+**Linux y Mac:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/evilrender23/Maker-Studio/main/instalar.sh | bash
+```
+
+**Windows** (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/evilrender23/Maker-Studio/main/instalar.ps1 | iex
+```
+
+También desde un clon: `bash Maker-Studio/instalar.sh` o
+`powershell -ExecutionPolicy Bypass -File Maker-Studio\instalar.ps1`.
+
+|  | Código y caché | Programas | Comandos | Acceso |
+|---|---|---|---|---|
+| Linux | `~/.local/share/MakerStudio/codigo` | `~/.local/share/MakerStudio/app` | enlaces en `~/.local/bin` | menú de aplicaciones |
+| Mac | `~/Library/Application Support/MakerStudio/codigo` | `…/MakerStudio/app` | enlaces en `~/.local/bin` | `~/Applications/Maker Studio.app` |
+| Windows | `%LOCALAPPDATA%\MakerStudio\codigo` | `%LOCALAPPDATA%\MakerStudio\app` | `app` en el PATH del usuario | menú Inicio |
+
+Para actualizar, vuelve a ejecutar el mismo comando: trae lo último de `main`
+y recompila aprovechando la caché (si el editor está abierto, espera a que lo
+cierres para cambiar de versión). Opciones: `--repo`, `--rama`, `--destino` y
+`--bin` (en Windows `-Repo`, `-Rama` y `-Destino`). No borres la carpeta
+`codigo`: los scripts de tus proyectos se compilan contra el `maker_api` que
+hay dentro.
+
+## Compilar desde el código
+
+Requisitos: Rust 1.95+ (edición 2024) y una GPU con Vulkan, Metal o DirectX 12
+(OpenGL como último recurso).
 
 ```bash
 cargo build --release
 ./target/release/maker-studio                 # Project Hub
 ./target/release/maker-studio ruta/al/proyecto
 ./target/release/maker-studio --new-demo ~/MakerProjects/Demo --build-scripts
+./target/release/maker-player ruta/al/proyecto  # solo el juego
 ```
+
+`maker-studio --help` lista las opciones para pruebas automáticas
+(`--screenshot`, `--play`, `--hold TECLA`, `--select`, `--export`…).
 
 En el Hub, **Crear proyecto** con la plantilla **Demo jugable** genera una
 escena con un personaje físico (WASD, Espacio para saltar, F para lanzar
@@ -95,6 +133,21 @@ cargo test --release -p maker_engine --test hot_reload -- --ignored   # compila 
 Más detalle en [docs/ARQUITECTURA.md](docs/ARQUITECTURA.md) (qué se toma de
 cada motor y por qué) y [docs/ROADMAP.md](docs/ROADMAP.md).
 
+Disclaimer: esto nace de un proyecto personal, para mi uso personal. Puedes
+usarlo, pero no esperes que te dé soporte.
+
 ## Licencia
 
-[MIT](LICENSE) © 2026 EvilRender23
+Maker Studio se distribuye bajo la [licencia MIT](LICENSE). Puedes usarlo,
+modificarlo y redistribuirlo libremente (también en proyectos comerciales),
+con una única condición: **debes atribuirme**. Cualquier copia o parte
+sustancial del código debe conservar el aviso de copyright y el texto de la
+licencia:
+
+```
+Copyright (c) 2026 EvilRender23
+```
+
+Si usas Maker Studio o parte de su código en tu proyecto, incluye un crédito
+visible, por ejemplo: "Basado en Maker Studio de EvilRender23
+(https://github.com/evilrender23)".

@@ -1137,6 +1137,9 @@ fn environment(ed: &mut Editor, ui: &mut Ui) {
     section_label(ui, "Sombreado global");
     crate::postproceso_ui::global_shading(ui, &mut env.global_shading);
     ui.add_space(10.0);
+    section_label(ui, "Iluminación global");
+    crate::iluminacion_ui::iluminacion_global(ui, &mut env.iluminacion_global, ed.renderer.gi_soportada());
+    ui.add_space(10.0);
     section_label(ui, "Posprocesado");
     let accion = crate::postproceso_ui::post_stack(ui, &mut env, &mut ed.renderer, &ed.project.root);
     if env != ed.scene.env {

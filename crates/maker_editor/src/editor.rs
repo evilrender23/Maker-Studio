@@ -148,6 +148,10 @@ pub struct Editor {
     pub shadows: bool,
     /// Posprocesado en el visor (Play incluido).
     pub post_fx: bool,
+    /// Iluminación global en el visor (si la escena la tiene activada).
+    pub gi: bool,
+    /// Vista de depuración de la iluminación global.
+    pub gi_debug: maker_render::GiDebug,
     pub bottom_tab: BottomTab,
     pub script: Option<OpenScript>,
     pub hierarchy_filter: String,
@@ -234,6 +238,8 @@ impl Editor {
             show_grid: true,
             shadows: true,
             post_fx: true,
+            gi: true,
+            gi_debug: Default::default(),
             bottom_tab: BottomTab::Content,
             script: None,
             hierarchy_filter: String::new(),

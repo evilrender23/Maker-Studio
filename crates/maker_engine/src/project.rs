@@ -135,6 +135,7 @@ impl Project {
         if demo {
             demo_ui(&mut project)?;
             library_scene().save(&project.root.join("scenes/biblioteca.mscene"))?;
+            crate::iluminacion::cornell_scene().save(&project.root.join("scenes/cornell.mscene"))?;
             for (name, src) in crate::postproceso::EXAMPLES {
                 write(&project.root.join(crate::postproceso::CUSTOM_DIR).join(name), src)?;
             }
@@ -837,7 +838,10 @@ mod tests {
         assert_eq!(scene.get::<MeshRenderer>(player).unwrap().material.shading, ShadingModel::Toon);
         let sphere = scene.find_by_name("Esfera").unwrap();
         assert_eq!(scene.get::<MeshRenderer>(sphere).unwrap().material.shading, ShadingModel::Hatching);
-        assert_eq!(p2.scenes(), vec!["scenes/biblioteca.mscene".to_string(), "scenes/main.mscene".to_string()]);
+        assert_eq!(p2.scenes(), vec!["scenes/biblioteca.mscene".to_string(), "scenes/cornell.mscene".to_string(), "scenes/main.mscene".to_string()]);
+        // La caja de Cornell de la demo carga con la iluminación global activada.
+        let cornell = Scene::load(&p2.root.join("scenes/cornell.mscene")).unwrap();
+        assert!(cornell.env.iluminacion_global.activa());
         // Los efectos propios de ejemplo existen y la escena los referencia.
         let used = crate::postproceso::post_files_used([&scene.env]);
         assert_eq!(used.len(), 2);

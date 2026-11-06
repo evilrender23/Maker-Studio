@@ -49,6 +49,21 @@ fn toolbar(ed: &mut Editor, ui: &mut egui::Ui) {
         ui.toggle_value(&mut ed.show_grid, "Rejilla");
         ui.toggle_value(&mut ed.shadows, "Sombras");
         ui.toggle_value(&mut ed.post_fx, "Posprocesado").on_hover_text("Efectos de posprocesado de la escena");
+        if ed.scene.env.iluminacion_global.activa() {
+            ui.toggle_value(&mut ed.gi, "GI").on_hover_text("Iluminación global y reflejos de la escena");
+            if ed.gi {
+                egui::ComboBox::from_id_salt("gi-debug")
+                    .selected_text(ed.gi_debug.label())
+                    .width(118.0)
+                    .show_ui(ui, |ui| {
+                        for d in maker_render::GiDebug::ALL {
+                            ui.selectable_value(&mut ed.gi_debug, d, d.label());
+                        }
+                    })
+                    .response
+                    .on_hover_text("Vista de la iluminación global: imagen final, vóxeles, solo luz indirecta o solo reflejos");
+            }
+        }
         ui.separator();
         ui.toggle_value(&mut ed.mostrar_ui, "Interfaz").on_hover_text("Dibujar la interfaz sobre la vista");
         if !ed.is_playing() {
@@ -62,8 +77,9 @@ fn toolbar(ed: &mut Editor, ui: &mut egui::Ui) {
             let s = ed.renderer.stats;
             let fps = if ed.frame_times.is_empty() { 0.0 } else { ed.frame_times.len() as f32 / ed.frame_times.iter().sum::<f32>().max(1e-4) };
             // La versión más larga que quepa sin pisar los botones de la izquierda.
+            let gi = s.gi_ms.filter(|_| s.gi).map(|ms| format!(" · GI {ms:.1} ms")).unwrap_or_default();
             let variantes = [
-                format!("{fps:.0} fps · {} draw calls · {} k tris · {} entidades", s.draw_calls, s.triangles / 1000, ed.scene.len()),
+                format!("{fps:.0} fps · {} draw calls · {} k tris · {} entidades{gi}", s.draw_calls, s.triangles / 1000, ed.scene.len()),
                 format!("{fps:.0} fps · {} draw calls · {} k tris", s.draw_calls, s.triangles / 1000),
                 format!("{fps:.0} fps"),
             ];
@@ -95,7 +111,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, rs: &egui_wgpu::RenderState) {
     };
     let editing_view = game_cam.is_none();
 
-    let mut opts = RenderOptions { show_grid: ed.show_grid && editing_view, shadows: ed.shadows, post: ed.post_fx, ..Default::default() };
+    let mut opts = RenderOptions { show_grid: ed.show_grid && editing_view, shadows: ed.shadows, post: ed.post_fx, gi: ed.gi, gi_debug: ed.gi_debug, ..Default::default() };
     if editing_view && let Some(s) = ed.selection {
         let h = ed.scene.hierarchy();
         let mut stack = vec![s];

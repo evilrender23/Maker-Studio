@@ -42,6 +42,14 @@ gruesas. **Tinta** colorea los trazos y el contorno; **Separación** es la
 distancia entre trazos en píxeles a 1080 p; **Suavidad** alarga la transición
 entre capas.
 
+## Iluminación global
+
+Con la GI de la escena activada ([ILUMINACION.md](ILUMINACION.md)), el PBR
+usa la luz indirecta y los reflejos trazados en lugar del ambiente
+hemisférico y del reflejo aproximado del cielo; el toon usa la luz indirecta
+posterizada en escalones como luz de relleno; la plumilla, su luminancia para
+decidir el rayado; el modelo sin luz la ignora.
+
 ## Contorno de casco invertido
 
 Pase aparte con *cull* de caras frontales: las caras traseras se desplazan en

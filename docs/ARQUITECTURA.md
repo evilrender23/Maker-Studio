@@ -24,6 +24,7 @@ Maker Studio es un workspace de Cargo con cinco crates:
 | Play en el editor con restauración al parar | Unity, Unreal PIE | Instantánea de la escena al pulsar Play; Stop la restaura. Los cambios hechos jugando se descartan, como en Unity. |
 | Recarga en caliente de código | Unreal Live Coding, Godot | Scripts en `cdylib` recargados al compilar; frontera C-ABI estable. |
 | Materiales PBR metal-rugosidad | Unreal, Unity HDRP/URP, Godot | GGX + Smith + Schlick, ambiente hemisférico, reflejo aproximado del cielo, tonemap ACES. |
+| Iluminación global dinámica híbrida (pantalla → escena → caché de radiancia) | Unreal (Lumen), NVIDIA VXGI, Godot (VoxelGI / SDFGI) | Clipmap de vóxeles en cascadas centrado en la cámara, inyección de luz con realimentación, recolección por píxel (trazado en pantalla, conos, cielo), acumulación temporal y à-trous. Ver [ILUMINACION.md](ILUMINACION.md). |
 | Modelo de sombreado por material | Unreal (*shading models*), Godot (`render_mode`) | `Material::shading`: PBR, toon, sin luz o plumilla; un pipeline por modelo. |
 | Biblioteca de assets integrada | Unreal (Starter Content / Fab), Unity (Asset Store) | `assets/biblioteca` va con el motor y se referencia como `biblioteca://pack/modelo.glb`; exportar copia solo lo usado. Ver [BIBLIOTECA.md](BIBLIOTECA.md). |
 | Animación esquelética con reasignación por nombre de hueso | Unreal (IK Retargeter), Godot (`BoneMap`) | Componente `Animator`; skinning en GPU con una paleta de huesos por entidad y fotograma. |
@@ -54,6 +55,10 @@ Maker Studio es un workspace de Cargo con cinco crates:
   CPU y se sube una vez por fotograma a un único búfer de almacenamiento; la
   usan el pase de color, el de sombras y el contorno. Las listas de dibujo y
   los búferes de subida se reutilizan entre fotogramas.
+- Iluminación global: recursos creados solo con la GI activa (y liberados al
+  apagarla), cascadas de vóxeles en caché que solo se revoxelizan cuando cambia
+  lo que contienen, grupos de enlace precreados para el doble búfer: ninguna
+  reserva por fotograma.
 - Física Rapier (SIMD, islas, *sleeping*); solo existe durante Play.
 - Scripts nativos sin intérprete ni GC.
 - El historial de deshacer guarda la escena completa solo al terminar una
@@ -62,7 +67,9 @@ Maker Studio es un workspace de Cargo con cinco crates:
 ## Renderizador
 
 Pasadas por fotograma: sombras (profundidad desde el sol, con recorte alfa y
-piel) → cielo (triángulo a pantalla completa) → opacos y recortes agrupados por
+piel) → iluminación global si la escena la tiene (voxelizar lo que cambió,
+inyectar la luz, prepase de normales, recolección, temporal y filtro; ver
+[ILUMINACION.md](ILUMINACION.md)) → cielo (triángulo a pantalla completa) → opacos y recortes agrupados por
 pipeline (PBR y sin luz → toon → plumilla) → contornos de casco invertido de
 los materiales toon y plumilla → transparentes de atrás adelante → contorno de
 selección → rejilla infinita del editor (con desvanecimiento) → posprocesado
@@ -95,7 +102,7 @@ para que el casco no se abra en las aristas duras sin engordar el vértice
 del PBR. Detalles de cada modelo en [SHADERS.md](SHADERS.md).
 
 `crates/maker_render/src/renderer.rs` tiene tests que renderizan sin ventana y
-comprueban píxeles: la escena inicial en PBR y una escena con todos los
+comprueban píxeles (y `gi/tests.rs`, los de la iluminación global): la escena inicial en PBR y una escena con todos los
 modelos intercalados (agrupación por pipeline y color del contorno), la pila
 de posprocesado vacía (píxeles idénticos, cero pases), la cadena HDR frente al
 tonemap en la escena, todos los efectos integrados, los efectos WGSL propios

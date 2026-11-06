@@ -141,6 +141,38 @@ pub fn build_normal_mips(w: u32, h: u32, rgba: Vec<u8>) -> MipChain {
     MipChain { levels, has_alpha: false }
 }
 
+/// Cadena de mips de un mapa de datos (metal/rugosidad, oclusión): RGBA8 lineal, media simple
+/// por canal sin pasar por sRGB.
+pub fn build_data_mips(w: u32, h: u32, rgba: Vec<u8>) -> MipChain {
+    let mut levels = vec![(w, h, rgba)];
+    loop {
+        let (lw, lh, src) = levels.last().unwrap();
+        let (lw, lh) = (*lw, *lh);
+        if lw == 1 && lh == 1 {
+            break;
+        }
+        let (nw, nh) = ((lw / 2).max(1), (lh / 2).max(1));
+        let mut out = vec![0u8; (nw * nh * 4) as usize];
+        for y in 0..nh {
+            for x in 0..nw {
+                let mut acc = [0u32; 4];
+                for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                    let i = (((y * 2 + dy).min(lh - 1) * lw + (x * 2 + dx).min(lw - 1)) * 4) as usize;
+                    for c in 0..4 {
+                        acc[c] += src[i + c] as u32;
+                    }
+                }
+                let o = ((y * nw + x) * 4) as usize;
+                for c in 0..4 {
+                    out[o + c] = ((acc[c] + 2) / 4) as u8;
+                }
+            }
+        }
+        levels.push((nw, nh, out));
+    }
+    MipChain { levels, has_alpha: false }
+}
+
 /// Decodifica PNG/JPEG a RGBA8.
 pub fn decode(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     let img = image::load_from_memory(bytes).map_err(|e| e.to_string())?.to_rgba8();

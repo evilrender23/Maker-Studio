@@ -1716,6 +1716,7 @@ dependencies = [
 name = "maker_textura"
 version = "0.1.0"
 dependencies = [
+ "maker_engine",
  "serde_json",
  "texturecraft-engine",
  "texturecraft-render",

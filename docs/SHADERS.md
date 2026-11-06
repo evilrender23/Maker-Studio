@@ -258,6 +258,19 @@ En el Inspector (**Malla → Normal map**):
 - Los normal maps se cargan en lineal (no sRGB) y sus mipmaps promedian
   vectores y los renormalizan.
 
+## Mapas PBR del glTF
+
+Además del color base y el normal map, cada material glTF aporta:
+
+| Mapa | Efecto |
+|---|---|
+| `metallicRoughnessTexture` | Metal (canal B) y rugosidad (G) por texel, × `metallicFactor` y `roughnessFactor`. Con él mandan el mapa y sus factores: el metal y la rugosidad del material de la entidad (o del sombreado global) no cuentan en esa submalla. |
+| `occlusionTexture` | Oclusión ambiental (canal R) según su `strength`. Solo oscurece la luz indirecta (ambiente, cielo y GI), no el sol ni las luces puntuales. |
+| `emissiveTexture` | × `emissiveFactor` (y `KHR_materials_emissive_strength`); se suma a la emisión de la entidad en PBR, sin luz, toon y plumilla. |
+
+Son los mapas que exporta el modo Texturizado ([TEXTURIZADO.md](TEXTURIZADO.md)). Metal/rugosidad y
+oclusión se cargan en lineal (pueden ser el mismo archivo ORM); la emisión, en sRGB.
+
 ## Limitaciones
 
 - La plumilla está en espacio de pantalla: los trazos no se pegan a la
@@ -275,6 +288,8 @@ En el Inspector (**Malla → Normal map**):
   pintado o horneado es siempre mejor.
 - Solo se usa el juego de UV del color base; un `normalTexture` con otro
   `texCoord` se ignora. Sin oclusión de paralaje ni mapas de altura.
+- La emisión de los mapas glTF no ilumina la escena con la GI (la de la entidad sí).
+- Toon y plumilla no usan el metal/rugosidad ni la oclusión de los mapas.
 - El modo automático genera al cargar: en texturas grandes la primera vez
   tarda un poco (en otro hilo; mientras, la malla se ve sin relieve).
 - La rejilla y el contorno de selección del editor pasan por la cadena de

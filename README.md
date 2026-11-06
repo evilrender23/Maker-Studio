@@ -62,6 +62,8 @@ scripts de cada juego.
   (PNG o automáticos), con intensidad y verde DirectX por material. La
   biblioteca los trae en 644 modelos. Ver
   [docs/SHADERS.md](docs/SHADERS.md#normal-maps).
+- **Mapas PBR del glTF**: metal/rugosidad, oclusión y emisión por texel. Ver
+  [docs/SHADERS.md](docs/SHADERS.md#mapas-pbr-del-gltf).
 - **Posprocesado** por escena: pila ordenada de efectos (tonemapping ACES/AgX,
   corrección de color con LUT, bloom, viñeta, aberración cromática, grano,
   retro, enfoque, FXAA, contorno en pantalla, niebla de altura, profundidad de

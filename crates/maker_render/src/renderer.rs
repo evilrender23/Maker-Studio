@@ -17,7 +17,7 @@ use maker_engine::biblioteca;
 use maker_engine::components::*;
 use maker_engine::math::{directional_light_view_proj, look_at};
 use maker_engine::mesh::{Aabb, MeshData};
-use maker_engine::model::{AlphaMode, ModelData, TextureSource};
+use maker_engine::model::{AlphaMode, ModelData, ModelMaterial, TextureSource};
 use maker_engine::normal_gen;
 use maker_engine::postproceso::Shade;
 use maker_engine::scene::Scene;
@@ -113,6 +113,21 @@ const _: () = assert!(std::mem::size_of::<ObjectU>() as u64 <= OBJ_STRIDE);
 struct MaterialU {
     factor: [f32; 4],
     params: [f32; 4],
+    /// x: metal, y: rugosidad (factores del glTF), z: fuerza de la oclusión,
+    /// w: 1 si hay `metallicRoughnessTexture` (manda sobre los escalares de la entidad).
+    pbr: [f32; 4],
+    /// Emisión del glTF (lineal, ya multiplicada por su fuerza).
+    emissive: [f32; 4],
+}
+
+/// Recursos del grupo 2 de un material del modelo.
+struct MatRes {
+    base: wgpu::TextureView,
+    buf: wgpu::Buffer,
+    /// Metal/rugosidad, oclusión (lineales) y emisión (sRGB); blancas si no hay.
+    mr: Arc<wgpu::TextureView>,
+    occlusion: Arc<wgpu::TextureView>,
+    emissive: Arc<wgpu::TextureView>,
 }
 
 /// Grupo 3: x = escala del normal map (0 = no hay).
@@ -382,7 +397,7 @@ pub struct SceneRenderer {
     model_index: HashMap<MeshSource, usize>,
     materials: Vec<wgpu::BindGroup>,
     /// Recursos de cada material (para combinarlo con su normal map en el grupo 2).
-    material_res: Vec<(wgpu::TextureView, wgpu::Buffer)>,
+    material_res: Vec<MatRes>,
     /// Grupo 2 de las pipelines principales por (material, normal map).
     matn: HashMap<(usize, usize), wgpu::BindGroup>,
     textures: HashMap<String, Option<Arc<wgpu::TextureView>>>,
@@ -528,7 +543,8 @@ impl SceneRenderer {
             ],
         });
 
-        // Grupo 2 de las pipelines principales: material (0..2) + normal map (3, 4). El grupo 3 es
+        // Grupo 2 de las pipelines principales: material (0..2) + normal map (3, 4) + metal/rugosidad,
+        // oclusión y emisión (5..7). El grupo 3 es
         // de la iluminación global; las de sombra y contorno usan solo `material_bgl`.
         let normal_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("material + normal map"),
@@ -551,6 +567,24 @@ impl SceneRenderer {
                     binding: 4,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
                     count: None,
                 },
             ],
@@ -866,6 +900,27 @@ impl SceneRenderer {
         view.unwrap_or_else(|| self.white.clone())
     }
 
+    /// Mapa de datos lineal (metal/rugosidad, oclusión) cacheado; blanco si no se puede leer.
+    fn data_texture(&mut self, src: &TextureSource) -> Arc<wgpu::TextureView> {
+        let key = format!("datos:{}", src.key());
+        if let Some(t) = self.textures.get(&key) {
+            return t.clone().unwrap_or_else(|| self.white.clone());
+        }
+        let bytes = match src {
+            TextureSource::File(p) => std::fs::read(p).map_err(|e| format!("{}: {e}", p.display())),
+            TextureSource::Embedded { bytes, .. } => Ok(bytes.as_ref().clone()),
+        };
+        let view = match bytes.and_then(|b| texture::decode(&b)) {
+            Ok((w, h, px)) => Some(Arc::new(Self::upload_texture(&self.device, &self.queue, &key, texture::build_data_mips(w, h, px), NORMAL_FORMAT))),
+            Err(e) => {
+                maker_engine::log::error("render", format!("textura {key}: {e}"));
+                None
+            }
+        };
+        self.textures.insert(key, view.clone());
+        view.unwrap_or_else(|| self.white.clone())
+    }
+
     fn make_normal_bg(device: &wgpu::Device, _layout: &wgpu::BindGroupLayout, view: &wgpu::TextureView, scale: f32) -> NormalRes {
         let u = NormalMapU { params: [scale, 0.0, 0.0, 0.0] };
         let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("normal map"), contents: bytemuck::bytes_of(&u), usage: wgpu::BufferUsages::UNIFORM });
@@ -877,17 +932,20 @@ impl SceneRenderer {
         if self.matn.contains_key(&(mat, nrm)) {
             return;
         }
-        let (tex, mbuf) = &self.material_res[mat];
+        let m = &self.material_res[mat];
         let (ntex, nbuf) = &self.normal_bgs[nrm];
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("material + normal map"),
             layout: &self.normal_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(tex) },
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&m.base) },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
-                wgpu::BindGroupEntry { binding: 2, resource: mbuf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: m.buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(ntex) },
                 wgpu::BindGroupEntry { binding: 4, resource: nbuf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&m.mr) },
+                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&m.occlusion) },
+                wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(&m.emissive) },
             ],
         });
         self.matn.insert((mat, nrm), bg);
@@ -1086,8 +1144,25 @@ impl SceneRenderer {
         }
     }
 
-    fn material_bind_group(&mut self, factor: [f32; 4], cutoff: f32, tex: &wgpu::TextureView) -> usize {
-        let u = MaterialU { factor, params: [cutoff, 0.0, 0.0, 0.0] };
+    fn material_bind_group(&mut self, mm: &ModelMaterial, cutoff: f32, tex: &wgpu::TextureView) -> usize {
+        let u = MaterialU {
+            factor: mm.base_color,
+            params: [cutoff, 0.0, 0.0, 0.0],
+            pbr: [mm.metallic, mm.roughness, mm.occlusion_strength, if mm.metallic_roughness.is_some() { 1.0 } else { 0.0 }],
+            emissive: v4(mm.emissive, 0.0),
+        };
+        let mr = match &mm.metallic_roughness {
+            Some(t) => self.data_texture(t),
+            None => self.white.clone(),
+        };
+        let occlusion = match &mm.occlusion {
+            Some(t) => self.data_texture(t),
+            None => self.white.clone(),
+        };
+        let emissive = match &mm.emissive_texture {
+            Some(t) => self.texture(t, None),
+            None => self.white.clone(),
+        };
         let buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("material"), contents: bytemuck::bytes_of(&u), usage: wgpu::BufferUsages::UNIFORM });
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("material"),
@@ -1099,7 +1174,7 @@ impl SceneRenderer {
             ],
         });
         self.materials.push(bg);
-        self.material_res.push((tex.clone(), buf));
+        self.material_res.push(MatRes { base: tex.clone(), buf, mr, occlusion, emissive });
         self.materials.len() - 1
     }
 
@@ -1227,7 +1302,7 @@ impl SceneRenderer {
                 Some(t) => self.texture(t, cutoff),
                 None => self.white.clone(),
             };
-            mat_bg.push(self.material_bind_group(mm.base_color, cutoff.unwrap_or(0.0), &tex));
+            mat_bg.push(self.material_bind_group(mm, cutoff.unwrap_or(0.0), &tex));
             nrm_bg.push(match &mm.normal {
                 Some(n) => self.normal_bg(n, mm.normal_scale),
                 None => FLAT_NORMAL,
@@ -2239,21 +2314,35 @@ pub(crate) mod tests {
     /// glTF de un plano de 2×2 m (como la primitiva) con textura de color y,
     /// opcionalmente, `normalTexture`.
     fn write_plane_gltf(path: &Path, color: &str, normal: Option<(&str, f32)>) {
+        match normal {
+            Some((n, scale)) => write_plane_gltf_with(path, &[color, n], &format!(r#""normalTexture":{{"index":1,"scale":{scale}}}"#)),
+            None => write_plane_gltf_with(path, &[color], ""),
+        }
+    }
+
+    /// Plano con `images[i]` como textura `i` (la 0 es el color base) y `extra` añadido al
+    /// material (p. ej. `"occlusionTexture":{"index":1}`); `pbr` va dentro de
+    /// `pbrMetallicRoughness`.
+    fn write_plane_gltf_with(path: &Path, images: &[&str], extra: &str) {
+        write_plane_gltf_pbr(path, images, "", extra)
+    }
+
+    fn write_plane_gltf_pbr(path: &Path, images: &[&str], pbr: &str, extra: &str) {
         let pos: [f32; 12] = [-1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0, -1.0, -1.0, 0.0, -1.0];
         let nrm: [f32; 12] = [0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0];
         let uv: [f32; 8] = [0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0];
         let idx: [u16; 6] = [0, 1, 2, 0, 2, 3];
         let mut buf: Vec<u8> = pos.iter().chain(&nrm).chain(&uv).flat_map(|f| f.to_le_bytes()).collect();
         buf.extend(idx.iter().flat_map(|i| i.to_le_bytes()));
-        let (images, textures, ntex) = match normal {
-            Some((n, scale)) => (format!(r#"[{{"uri":"{color}"}},{{"uri":"{n}"}}]"#), r#"[{"source":0},{"source":1}]"#, format!(r#","normalTexture":{{"index":1,"scale":{scale}}}"#)),
-            None => (format!(r#"[{{"uri":"{color}"}}]"#), r#"[{"source":0}]"#, String::new()),
-        };
+        let images_json = format!("[{}]", images.iter().map(|u| format!(r#"{{"uri":"{u}"}}"#)).collect::<Vec<_>>().join(","));
+        let textures_json = format!("[{}]", (0..images.len()).map(|i| format!(r#"{{"source":{i}}}"#)).collect::<Vec<_>>().join(","));
+        let pbr = if pbr.is_empty() { String::new() } else { format!(",{pbr}") };
+        let extra = if extra.is_empty() { String::new() } else { format!(",{extra}") };
         let json = format!(
             r#"{{"asset":{{"version":"2.0"}},"scene":0,"scenes":[{{"nodes":[0]}}],"nodes":[{{"mesh":0}}],
             "meshes":[{{"primitives":[{{"attributes":{{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2}},"indices":3,"material":0}}]}}],
-            "materials":[{{"pbrMetallicRoughness":{{"baseColorTexture":{{"index":0}}}}{ntex}}}],
-            "images":{images},"textures":{textures},
+            "materials":[{{"pbrMetallicRoughness":{{"baseColorTexture":{{"index":0}}{pbr}}}{extra}}}],
+            "images":{images_json},"textures":{textures_json},
             "buffers":[{{"byteLength":{},"uri":"data:application/octet-stream;base64,{}"}}],
             "bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":48}},{{"buffer":0,"byteOffset":48,"byteLength":48}},{{"buffer":0,"byteOffset":96,"byteLength":32}},{{"buffer":0,"byteOffset":128,"byteLength":12}}],
             "accessors":[{{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3","min":[-1,0,-1],"max":[1,0,1]}},
@@ -2264,6 +2353,76 @@ pub(crate) mod tests {
             b64(&buf)
         );
         std::fs::write(path, json).unwrap();
+    }
+
+    /// Media de cada canal en la franja de suelo.
+    fn ground_rgb(px: &[u8]) -> [f64; 3] {
+        let mut sum = [0.0; 3];
+        let mut n = 0.0;
+        for y in 130..178 {
+            for x in 20..300 {
+                let p = px_at(px, x, y);
+                for c in 0..3 {
+                    sum[c] += p[c] as f64;
+                }
+                n += 1.0;
+            }
+        }
+        sum.map(|v| v / n)
+    }
+
+    /// Los mapas PBR del glTF (lo que exporta el modo Texturizado): `metallicRoughnessTexture`
+    /// manda sobre el metal y la rugosidad de la entidad, `occlusionTexture` oscurece solo la luz
+    /// indirecta según su fuerza y `emissiveTexture` × `emissiveFactor` se suma a la emisión.
+    #[test]
+    fn gltf_pbr_maps_metal_roughness_occlusion_emission() {
+        let Some((device, queue, _gpu)) = device() else { return };
+        let root = temp_project("pbr");
+        let solid = |name: &str, rgb: [u8; 3]| image::RgbImage::from_pixel(4, 4, image::Rgb(rgb)).save(root.join(name)).unwrap();
+        solid("color.png", [200, 200, 200]);
+        solid("metal.png", [255, 50, 255]); // G rugosidad 0,2; B metal 1
+        solid("dielectrico.png", [255, 255, 0]); // G rugosidad 1; B metal 0
+        solid("ocl.png", [0, 255, 255]); // R oclusión total
+        solid("emis.png", [255, 255, 255]);
+        write_plane_gltf(&root.join("liso.gltf"), "color.png", None);
+        write_plane_gltf_pbr(&root.join("metal.gltf"), &["color.png", "metal.png"], r#""metallicRoughnessTexture":{"index":1}"#, "");
+        write_plane_gltf_pbr(&root.join("dielectrico.gltf"), &["color.png", "dielectrico.png"], r#""metallicRoughnessTexture":{"index":1}"#, "");
+        write_plane_gltf_with(&root.join("ocl.gltf"), &["color.png", "ocl.png"], r#""occlusionTexture":{"index":1}"#);
+        write_plane_gltf_with(&root.join("ocl0.gltf"), &["color.png", "ocl.png"], r#""occlusionTexture":{"index":1,"strength":0}"#);
+        write_plane_gltf_with(&root.join("emis.gltf"), &["color.png", "emis.png"], r#""emissiveTexture":{"index":1},"emissiveFactor":[1,0,0]"#);
+        write_plane_gltf_with(&root.join("emis0.gltf"), &["color.png", "emis.png"], r#""emissiveTexture":{"index":1},"emissiveFactor":[0,0,0]"#);
+
+        let mut r = SceneRenderer::new(&device, &queue);
+        r.project_root = Some(root.clone());
+        r.resize(320, 180);
+        let mut scene = normal_scene();
+        let g = scene.find_by_name("Suelo").unwrap();
+        scene.set_transform(g, Transform::default().with_scale(Vec3::new(10.0, 1.0, 10.0)));
+        scene.update_transforms();
+        let mut with = |scene: &mut Scene, mesh: &str, metallic: f32, roughness: f32| {
+            set_ground(scene, |mr| {
+                mr.mesh = MeshSource::Model(mesh.into());
+                mr.material = Material { base_color: [1.0; 4], metallic, roughness, ..Default::default() };
+            });
+            render_px(&mut r, scene, false)
+        };
+        let liso = with(&mut scene, "liso.gltf", 0.0, 0.55);
+        // Metal/rugosidad: el mapa manda (los escalares de la entidad no cambian nada) y cambia la luz.
+        let metal = with(&mut scene, "metal.gltf", 0.0, 0.55);
+        assert!(max_diff(&with(&mut scene, "metal.gltf", 1.0, 0.1), &metal) <= 1, "con mapa, los escalares no cuentan");
+        assert!(mean_diff(&metal, &liso) > 2.0, "metal: {}", mean_diff(&metal, &liso));
+        let dielectrico = with(&mut scene, "dielectrico.gltf", 1.0, 0.1);
+        assert!(max_diff(&dielectrico, &with(&mut scene, "liso.gltf", 0.0, 1.0)) <= 2, "metal 0 y rugosidad 1 del mapa = escalares 0 y 1");
+        // Oclusión: oscurece; con fuerza 0, nada.
+        let ocl = with(&mut scene, "ocl.gltf", 0.0, 0.55);
+        assert!(ground_luma(&ocl) + 3.0 < ground_luma(&liso), "{} vs {}", ground_luma(&ocl), ground_luma(&liso));
+        assert!(max_diff(&with(&mut scene, "ocl0.gltf", 0.0, 0.55), &liso) <= 1);
+        // Emisión: suma rojo; factor 0, nada.
+        let emis = ground_rgb(&with(&mut scene, "emis.gltf", 0.0, 0.55));
+        let base = ground_rgb(&liso);
+        assert!(emis[0] > base[0] + 20.0 && (emis[1] - base[1]).abs() < 2.0, "{emis:?} vs {base:?}");
+        assert!(max_diff(&with(&mut scene, "emis0.gltf", 0.0, 0.55), &liso) <= 1);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Modelos glTF: el `normalTexture` del archivo se usa (con su escala);

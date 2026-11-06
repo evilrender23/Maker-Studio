@@ -51,13 +51,40 @@ pub struct ModelMaterial {
     pub normal: Option<TextureSource>,
     /// `normalTexture.scale`: multiplica X e Y del normal map.
     pub normal_scale: f32,
+    /// `metallicRoughnessTexture` (lineal: G rugosidad, B metal). Con ella mandan los factores
+    /// del glTF, no los escalares del material de la entidad.
+    pub metallic_roughness: Option<TextureSource>,
+    /// `metallicFactor`, `roughnessFactor`.
+    pub metallic: f32,
+    pub roughness: f32,
+    /// `occlusionTexture` (lineal, canal R) y su `strength`.
+    pub occlusion: Option<TextureSource>,
+    pub occlusion_strength: f32,
+    /// `emissiveTexture` (sRGB) y `emissiveFactor` × `KHR_materials_emissive_strength`, lineal.
+    pub emissive_texture: Option<TextureSource>,
+    pub emissive: [f32; 3],
     pub alpha: AlphaMode,
     pub double_sided: bool,
 }
 
 impl Default for ModelMaterial {
     fn default() -> Self {
-        Self { name: String::new(), base_color: [1.0; 4], texture: None, normal: None, normal_scale: 1.0, alpha: AlphaMode::Opaque, double_sided: false }
+        Self {
+            name: String::new(),
+            base_color: [1.0; 4],
+            texture: None,
+            normal: None,
+            normal_scale: 1.0,
+            metallic_roughness: None,
+            metallic: 1.0,
+            roughness: 1.0,
+            occlusion: None,
+            occlusion_strength: 1.0,
+            emissive_texture: None,
+            emissive: [0.0; 3],
+            alpha: AlphaMode::Opaque,
+            double_sided: false,
+        }
     }
 }
 
@@ -350,7 +377,25 @@ impl ModelData {
                 gltf::material::AlphaMode::Mask => AlphaMode::Mask(m.alpha_cutoff().unwrap_or(0.5)),
                 gltf::material::AlphaMode::Blend => AlphaMode::Blend,
             };
-            materials.push(ModelMaterial { name: m.name().unwrap_or("").to_string(), base_color: pbr.base_color_factor(), texture, normal, normal_scale, alpha, double_sided: m.double_sided() });
+            let occlusion_info = m.occlusion_texture();
+            let occlusion_strength = occlusion_info.as_ref().map(|o| o.strength()).unwrap_or(1.0);
+            let emissive_strength = m.emissive_strength().unwrap_or(1.0);
+            materials.push(ModelMaterial {
+                name: m.name().unwrap_or("").to_string(),
+                base_color: pbr.base_color_factor(),
+                texture,
+                normal,
+                normal_scale,
+                metallic_roughness: pbr.metallic_roughness_texture().and_then(|i| image_source(i.texture().source())),
+                metallic: pbr.metallic_factor(),
+                roughness: pbr.roughness_factor(),
+                occlusion: occlusion_info.and_then(|o| image_source(o.texture().source())),
+                occlusion_strength,
+                emissive_texture: m.emissive_texture().and_then(|i| image_source(i.texture().source())),
+                emissive: m.emissive_factor().map(|c| c * emissive_strength),
+                alpha,
+                double_sided: m.double_sided(),
+            });
         }
         let default_mat = materials.len();
         materials.push(ModelMaterial::default());

@@ -109,14 +109,15 @@ con el `.glb` del asset; si los UV se solapan más de un 5 %, propone UV únicos
 3. actualiza el material de Maker (color base, normal y, cuando el renderer los admita,
    ORM y emisión) y recarga la miniatura.
 
-**Hueco en el renderer de Maker**: hoy solo lee `base_tex` y `normal_tex`; metal y rugosidad son
-escalares por material. Sin un mapa ORM (oclusión/rugosidad/metal) y otro de emisión se pierde lo
-pintado en esos canales.
+El renderer de Maker lee del glTF el color base, el normal, el metal/rugosidad, la oclusión y la
+emisión ([SHADERS.md](SHADERS.md#mapas-pbr-del-gltf)), así que nada de lo pintado se pierde al
+aplicarlo. El GLB texturizado de TextureCraft (`Session::mesh_glb_bytes`) se carga con todos sus
+mapas.
 
 ## 5. Fases
 
 - [x] **F0. Estudio y prueba de integración**: este documento y el crate `maker_textura`.
-- [ ] **F1. Renderer**: `metallicRoughnessTexture`, `occlusionTexture` y `emissiveTexture` en
+- [x] **F1. Renderer**: `metallicRoughnessTexture`, `occlusionTexture` y `emissiveTexture` en
       `maker_render` e importación glTF.
 - [ ] **F2. Sesión**: `maker_textura` abre un asset (con UV únicos opcionales), guarda/carga
       `.tcraft` y aplica el resultado a la biblioteca.

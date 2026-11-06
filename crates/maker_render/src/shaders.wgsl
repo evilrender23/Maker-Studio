@@ -55,6 +55,8 @@ struct Object {
 struct Material {
     factor: vec4<f32>,       // color base lineal + alfa del glTF
     params: vec4<f32>,       // x: umbral de recorte alfa
+    pbr: vec4<f32>,          // metal, rugosidad (factores del glTF), fuerza de la oclusión, ¿hay mapa de metal/rugosidad?
+    emissive: vec4<f32>,     // emisión del glTF (lineal)
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -71,6 +73,10 @@ struct NormalMapU {
 };
 @group(2) @binding(3) var normal_tex: texture_2d<f32>;
 @group(2) @binding(4) var<uniform> nmap: NormalMapU;
+// Mapas PBR del glTF: metal/rugosidad (G, B) y oclusión (R) lineales; emisión en sRGB. Blancos si no hay.
+@group(2) @binding(5) var mr_tex: texture_2d<f32>;
+@group(2) @binding(6) var occlusion_tex: texture_2d<f32>;
+@group(2) @binding(7) var emissive_tex: texture_2d<f32>;
 // Iluminación global (gi/): difusa y reflejos a la resolución del trazado + su profundidad.
 @group(3) @binding(0) var gi_dif: texture_2d<f32>;
 @group(3) @binding(1) var gi_spec: texture_2d<f32>;
@@ -143,6 +149,25 @@ fn vs_main_skinned(v: VIn, s: SkinIn) -> VOut {
 fn base_albedo(in: VOut) -> vec4<f32> {
     let t = textureSample(base_tex, base_samp, in.uv);
     return obj.base_color * mat.factor * t * in.color;
+}
+
+// Emisión: la de la entidad más la del glTF (factor × textura).
+fn emission(in: VOut) -> vec3<f32> {
+    let e = mat.emissive.rgb * textureSample(emissive_tex, base_samp, in.uv).rgb;
+    return obj.emissive.rgb * obj.emissive.w + e;
+}
+
+// Metal y rugosidad: los del mapa del glTF si lo hay; si no, los de la entidad.
+fn metal_rough(in: VOut) -> vec2<f32> {
+    let t = textureSample(mr_tex, base_samp, in.uv);
+    let mapa = vec2<f32>(mat.pbr.x * t.b, mat.pbr.y * t.g);
+    return select(obj.params.xy, mapa, mat.pbr.w > 0.5);
+}
+
+// Oclusión ambiental del glTF (solo la luz indirecta).
+fn occlusion(in: VOut) -> f32 {
+    let o = textureSample(occlusion_tex, base_samp, in.uv).r;
+    return mix(1.0, o, clamp(mat.pbr.z, 0.0, 1.0));
 }
 
 // Normal geométrica (interpolada) orientada hacia la cámara en las caras traseras.
@@ -347,12 +372,14 @@ fn fs_main(in: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     let albedo = base.rgb;
     var color: vec3<f32>;
     if (obj.params.z > 0.5) {
-        color = albedo + obj.emissive.rgb * obj.emissive.w;
+        color = albedo + emission(in);
     } else {
         let n = shading_normal(in, front);
         let ng = geometric_normal(in, front);
-        let metallic = clamp(obj.params.x, 0.0, 1.0);
-        let rough = clamp(obj.params.y, 0.04, 1.0);
+        let mr = metal_rough(in);
+        let metallic = clamp(mr.x, 0.0, 1.0);
+        let rough = clamp(mr.y, 0.04, 1.0);
+        let ao = occlusion(in);
         let v = normalize(g.cam_pos.xyz - in.world);
         color = vec3<f32>(0.0);
         if (g.sun_dir.w > 0.5) {
@@ -378,15 +405,15 @@ fn fs_main(in: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
         }
         if (gi.ok) {
             // Iluminación global: difusa indirecta y reflejos trazados.
-            color += gi.dif * albedo * (1.0 - metallic) + gi.spec * fr;
+            color += (gi.dif * albedo * (1.0 - metallic) + gi.spec * fr) * ao;
         } else {
             // Ambiente hemisférico + reflejo aproximado del cielo.
             let amb = g.ground.w;
             let hemi = mix(g.ground.rgb, g.sky_top.rgb, n.y * 0.5 + 0.5);
             let env = sky_color(reflect(-v, n));
-            color += hemi * albedo * (1.0 - metallic) * amb + env * fr * amb * (1.0 - rough * 0.7);
+            color += (hemi * albedo * (1.0 - metallic) * amb + env * fr * amb * (1.0 - rough * 0.7)) * ao;
         }
-        color += obj.emissive.rgb * obj.emissive.w;
+        color += emission(in);
         color = apply_fog(color, in.world);
         let dbg = gi_depuracion(in.clip, in.world);
         if (dbg.a > 0.0) {
@@ -494,7 +521,7 @@ fn fs_toon(in: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
         let rim = band_step(fres, 1.0 - clamp(obj.style.w, 0.0, 1.0), s);
         color += obj.rim.rgb * obj.rim.w * rim * lit;
     }
-    color += obj.emissive.rgb * obj.emissive.w;
+    color += emission(in);
     color = apply_fog(color, in.world);
     let dbg = gi_depuracion(in.clip, in.world);
     if (dbg.a > 0.0) {
@@ -556,7 +583,7 @@ fn fs_hatch(in: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
     ink = max(ink, hatch_lines(px, vec2<f32>(0.0, 1.0), spacing, cover.z));
     ink = max(ink, hatch_lines(px + vec2<f32>(spacing * 0.5), vec2<f32>(0.7071, 0.7071), spacing, cover.w));
     var color = mix(albedo, obj.outline.rgb, ink);
-    color += obj.emissive.rgb * obj.emissive.w;
+    color += emission(in);
     color = apply_fog(color, in.world);
     return finish(tonemap(color * g.params.y), base.a);
 }

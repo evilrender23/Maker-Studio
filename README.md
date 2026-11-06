@@ -68,12 +68,27 @@ También desde un clon: `bash Maker-Studio/instalar.sh` o
 | Mac | `~/Library/Application Support/MakerStudio/codigo` | `…/MakerStudio/app` | enlaces en `~/.local/bin` | `~/Applications/Maker Studio.app` |
 | Windows | `%LOCALAPPDATA%\MakerStudio\codigo` | `%LOCALAPPDATA%\MakerStudio\app` | `app` en el PATH del usuario | menú Inicio |
 
-Para actualizar, vuelve a ejecutar el mismo comando: trae lo último de `main`
-y recompila aprovechando la caché (si el editor está abierto, espera a que lo
-cierres para cambiar de versión). Opciones: `--repo`, `--rama`, `--destino` y
-`--bin` (en Windows `-Repo`, `-Rama` y `-Destino`). No borres la carpeta
-`codigo`: los scripts de tus proyectos se compilan contra el `maker_api` que
-hay dentro.
+Opciones: `--repo`, `--rama`, `--destino` y `--bin` (en Windows `-Repo`,
+`-Rama` y `-Destino`). No borres la carpeta `codigo`: los scripts de tus
+proyectos se compilan contra el `maker_api` que hay dentro.
+
+### Actualizaciones automáticas
+
+Una copia instalada se actualiza sola desde la rama `main` de GitHub, sin
+releases: un minuto después de abrir el editor, y luego cada 6 horas, hace
+`git fetch` en `codigo/`. Si hay commits nuevos, compila la versión nueva en
+segundo plano, con una barra de progreso bajo el menú, y cuando está lista
+ofrece **Reiniciar ahora**. Si cierras el editor sin reiniciar, la versión
+nueva se aplica igualmente y es la que abre la próxima vez.
+
+- **Ayuda → Buscar actualizaciones** comprueba en el momento.
+- **Ayuda → Actualizar automáticamente** activa o desactiva la búsqueda
+  periódica.
+- Desde la terminal: `maker-studio --actualizar` y `maker-studio --version`.
+- Volver a ejecutar el comando de instalación también actualiza.
+
+Las compilaciones hechas con `cargo build` (sin instalador) no se actualizan
+solas.
 
 ## Compilar desde el código
 

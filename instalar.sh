@@ -15,7 +15,8 @@
 #   codigo/    el clon, con la caché de cargo (target/) para que la siguiente compilación sea rápida.
 #              No lo borres: los scripts de tus proyectos se compilan contra codigo/crates/maker_api;
 #   app/       maker-studio, maker-player y version.json (commit, fecha, rama, repo);
-#   registro/  compilacion.log, con la salida de git y cargo.
+#   registro/  actualizacion.log, con las líneas que lee el editor (PASO n/total, LISTO, APLICADO,
+#              ERROR), y compilacion.log, con la salida de git y cargo.
 # Y enlaza `maker-studio` y `maker-player` en --bin (por defecto ~/.local/bin). En Linux crea un
 # lanzador en el menú de aplicaciones; en Mac, ~/Applications/Maker Studio.app.
 #
@@ -23,7 +24,10 @@
 # un compilador de C, git y curl (con el gestor de paquetes y sudo); los dos, Rust. Rust se queda
 # instalado: el editor lo usa para compilar los scripts de cada proyecto.
 #
-# Para actualizar, vuelve a ejecutarlo: trae lo último de la rama y recompila aprovechando la caché.
+# Actualizaciones: el editor lo relanza con --actualizar --esperar-pid <su pid> --relanzar. Así no
+# pregunta ni instala requisitos, compila en app.nuevo, escribe LISTO y, cuando el editor se cierra,
+# cambia app/ por la versión nueva y lo vuelve a abrir. `maker-studio --actualizar` hace lo mismo
+# desde la terminal.
 
 set -uo pipefail
 
@@ -38,6 +42,9 @@ RAMA='main'
 if $LINUX; then DESTINO="${XDG_DATA_HOME:-$HOME/.local/share}/MakerStudio"; else DESTINO="$HOME/Library/Application Support/MakerStudio"; fi
 BIN="$HOME/.local/bin"
 REPO_INDICADO=false
+ACTUALIZAR=false
+ESPERAR_PID=0
+RELANZAR=false
 # eframe 0.37, wgpu 30 y la edición 2024 piden Rust 1.95 o más nuevo.
 RUST_MINIMO='1.95'
 
@@ -47,10 +54,18 @@ while [ $# -gt 0 ]; do
         --rama) RAMA="$2"; shift 2 ;;
         --destino) DESTINO="$2"; shift 2 ;;
         --bin) BIN="$2"; shift 2 ;;
-        -h|--help) sed -n '2,25p' "${BASH_SOURCE[0]:-/dev/null}" 2>/dev/null | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --actualizar) ACTUALIZAR=true; shift ;;
+        --esperar-pid) ESPERAR_PID="$2"; shift 2 ;;
+        --relanzar) RELANZAR=true; shift ;;
+        -h|--help) sed -n '2,30p' "${BASH_SOURCE[0]:-/dev/null}" 2>/dev/null | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "Opción desconocida: $1" >&2; exit 2 ;;
     esac
 done
+
+INTERACTIVO=true
+$ACTUALIZAR && INTERACTIVO=false
+# Sin nadie delante, git no debe quedarse esperando credenciales: mejor que falle y lo diga.
+$ACTUALIZAR && export GIT_TERMINAL_PROMPT=0
 
 export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
@@ -67,13 +82,24 @@ APP="$DESTINO/app"
 NUEVO="$DESTINO/app.nuevo"
 REGISTRO="$DESTINO/registro"
 LOG="$REGISTRO/compilacion.log"
+ESTADO="$REGISTRO/actualizacion.log"
 ULTIMA="$REGISTRO/ultima-salida.log"
 CERROJO="$REGISTRO/instalar.lock"
+# El editor lo deja si se cierra sin aplicar la actualización: se cambia de versión, pero no se abre.
+NO_RELANZAR="$REGISTRO/no-relanzar"
 TOTAL=6
 
-paso() { printf '\033[36m[%s/%s] %s\033[0m\n' "$1" "$TOTAL" "$2"; }
+anotar() { printf '%s\n' "$1" >> "$ESTADO"; }
+paso() {
+    anotar "PASO $1/$TOTAL $2"
+    $INTERACTIVO && printf '\033[36m[%s/%s] %s\033[0m\n' "$1" "$TOTAL" "$2"
+    return 0
+}
 fallar() {
-    printf '\033[31mERROR: %s\033[0m\n' "$(printf '%s' "$1" | tr '\n' ' ')" >&2
+    local texto
+    texto=$(printf '%s' "$1" | tr '\n' ' ')
+    anotar "ERROR $texto" 2>/dev/null
+    $INTERACTIVO && printf '\033[31mERROR: %s\033[0m\n' "$texto" >&2
     exit 1
 }
 tiene() { command -v "$1" >/dev/null 2>&1; }
@@ -83,8 +109,14 @@ ejecutar() {
     local carpeta=$1 resultado
     shift
     printf '> %s\n' "$*" >> "$LOG"
-    (cd "$carpeta" && "$@") 2>&1 | tee "$ULTIMA" | tee -a "$LOG" | sed $'s/^/\033[2m/; s/$/\033[0m/'
-    resultado=${PIPESTATUS[0]}
+    if $INTERACTIVO; then
+        (cd "$carpeta" && "$@") 2>&1 | tee "$ULTIMA" | tee -a "$LOG" | sed $'s/^/\033[2m/; s/$/\033[0m/'
+        resultado=${PIPESTATUS[0]}
+    else
+        (cd "$carpeta" && "$@") > "$ULTIMA" 2>&1
+        resultado=$?
+        cat "$ULTIMA" >> "$LOG"
+    fi
     return "$resultado"
 }
 
@@ -144,6 +176,7 @@ comprobar_requisitos() {
         hay "$r" || { faltan="$faltan $r"; nombres="$nombres${nombres:+, }$(nombre_de "$r")"; }
     done
     [ -z "$faltan" ] && return 0
+    $INTERACTIVO || fallar "Falta $nombres. Ejecuta instalar.sh en una terminal para instalarlo."
     printf '\033[33mFalta: %s\033[0m\n' "$nombres"
     # Con `curl | bash` la entrada es el propio script: se pregunta en la terminal.
     printf '¿Instalarlo? [T]odo / [u]no a uno / [n]ada '
@@ -239,10 +272,17 @@ PLIST
 # El editor y los juegos que se lanzaron desde esta instalación.
 procesos_de_la_app() { pgrep -f "^$APP/maker-(studio|player)( |$)" >/dev/null 2>&1; }
 
+esperar_pid() {
+    if [ "$ESPERAR_PID" -gt 0 ] 2>/dev/null; then
+        while kill -0 "$ESPERAR_PID" 2>/dev/null; do sleep 1; done
+    fi
+}
+
 esperar_cierre() {
     local avisado=false
+    esperar_pid
     while procesos_de_la_app; do
-        if ! $avisado; then
+        if $INTERACTIVO && ! $avisado; then
             printf '\033[33mCierra Maker Studio y los juegos abiertos desde él para terminar la instalación…\033[0m\n'
             avisado=true
         fi
@@ -250,19 +290,34 @@ esperar_cierre() {
     done
 }
 
+abrir_editor() {
+    if $LINUX; then
+        # Sin la terminal ni este script: sigue abierto cuando acaban.
+        (cd "$HOME" && setsid "$APP/maker-studio" >/dev/null 2>&1 < /dev/null &)
+    else
+        (cd "$HOME" && nohup "$APP/maker-studio" >/dev/null 2>&1 < /dev/null &)
+    fi
+}
+
 limpiar() { rm -rf "$CERROJO"; }
 
+# Un cerrojo con el pid dentro. Si lo tiene una instalación viva que solo espera a que se cierre el
+# editor, se la sustituye (esta compila lo último y hace lo mismo); si ya está cambiando de versión, no.
 tomar_cerrojo() {
-    local dueno
+    local dueno i
     mkdir "$CERROJO" 2>/dev/null && return 0
     dueno=$(cat "$CERROJO/pid" 2>/dev/null)
-    if [ -n "$dueno" ] && kill -0 "$dueno" 2>/dev/null; then
-        fallar 'Ya hay otra instalación de Maker Studio en marcha.'
+    if [ -n "$dueno" ] && [ "$dueno" != "$$" ] && kill -0 "$dueno" 2>/dev/null \
+        && ps -p "$dueno" -o command= 2>/dev/null | grep -q 'instalar\.sh'; then
+        [ "$(cat "$CERROJO/fase" 2>/dev/null)" = cambiando ] && fallar 'Otra instalación está cambiando Maker Studio de versión; vuelve a intentarlo en un momento.'
+        kill -TERM -- "-$dueno" 2>/dev/null || kill -TERM "$dueno" 2>/dev/null
+        for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$dueno" 2>/dev/null || break; sleep 1; done
+        kill -KILL -- "-$dueno" 2>/dev/null || kill -KILL "$dueno" 2>/dev/null
     fi
-    # Cerrojo de una instalación que ya no existe.
     rm -rf "$CERROJO"
     mkdir "$CERROJO" 2>/dev/null || fallar 'Ya hay otra instalación de Maker Studio en marcha.'
 }
+fase() { printf '%s\n' "$1" > "$CERROJO/fase"; }
 
 # ---------------------------------------------------------------- principal
 
@@ -270,8 +325,10 @@ principal() {
     mkdir -p "$REGISTRO" || { echo "No se puede crear $REGISTRO" >&2; exit 1; }
     tomar_cerrojo
     echo $$ > "$CERROJO/pid"
+    fase compilando
     trap limpiar EXIT
     : > "$LOG"
+    : > "$ESTADO"
 
     if $LINUX; then paso 1 'Comprobando el compilador de C, Git y Rust'
     else paso 1 'Comprobando las herramientas de Xcode, Git y Rust'; fi
@@ -303,27 +360,40 @@ principal() {
     if ! $LINUX; then
         xattr -dr com.apple.quarantine "$NUEVO" 2>/dev/null
     fi
+    anotar "LISTO $commit"
 
     if [ -d "$APP" ]; then
-        paso 5 'Cambiando a la versión nueva'
+        paso 5 'Esperando a que se cierre el editor para cambiar de versión'
+        fase esperando
         esperar_cierre
     else
         paso 5 "Instalando en $APP"
     fi
+    fase cambiando
     rm -rf "$APP.anterior"
     [ -d "$APP" ] && mv "$APP" "$APP.anterior"
     mv "$NUEVO" "$APP" || { [ -d "$APP.anterior" ] && mv "$APP.anterior" "$APP"; fallar "No se pudo instalar en $APP."; }
     rm -rf "$APP.anterior"
 
-    paso 6 "Enlazando los comandos en $BIN"
-    mkdir -p "$BIN" || fallar "No se puede crear $BIN"
-    ln -sf "$APP/maker-studio" "$BIN/maker-studio"
-    ln -sf "$APP/maker-player" "$BIN/maker-player"
-    if $LINUX; then
-        crear_lanzador_linux || echo 'Aviso: no se pudo crear el lanzador del menú de aplicaciones.'
+    if $ACTUALIZAR; then
+        # Los enlaces y el lanzador apuntan a app/, que no cambia de ruta: ya valen.
+        paso 6 'Versión nueva instalada'
     else
-        crear_app_mac || echo 'Aviso: no se pudo crear Maker Studio.app.'
+        paso 6 "Enlazando los comandos en $BIN"
+        mkdir -p "$BIN" || fallar "No se puede crear $BIN"
+        ln -sf "$APP/maker-studio" "$BIN/maker-studio"
+        ln -sf "$APP/maker-player" "$BIN/maker-player"
+        if $LINUX; then
+            crear_lanzador_linux || echo 'Aviso: no se pudo crear el lanzador del menú de aplicaciones.'
+        else
+            crear_app_mac || echo 'Aviso: no se pudo crear Maker Studio.app.'
+        fi
     fi
+    fase hecho
+    anotar "APLICADO $commit"
+    if $RELANZAR && [ ! -e "$NO_RELANZAR" ]; then abrir_editor; fi
+    rm -f "$NO_RELANZAR"
+    $INTERACTIVO || return 0
 
     printf '\033[32mMaker Studio %s instalado en %s.\033[0m\n' "${commit:0:7}" "$APP"
     case ":$PATH:" in

@@ -13,18 +13,24 @@
 #   codigo\    el clon, con la caché de cargo (target\) para que la siguiente compilación sea rápida.
 #              No lo borres: los scripts de tus proyectos se compilan contra codigo\crates\maker_api;
 #   app\       maker-studio.exe, maker-player.exe y version.json (commit, fecha, rama, repo);
-#   registro\  compilacion.log, con la salida de git y cargo.
+#   registro\  actualizacion.log, con las líneas que lee el editor (PASO n/total, LISTO, APLICADO,
+#              ERROR), y compilacion.log, con la salida de git y cargo.
 # Añade app\ al PATH del usuario (maker-studio y maker-player desde cualquier consola) y crea
 # «Maker Studio» en el menú Inicio.
 #
 # Pregunta antes de instalar con winget lo que falte: Git, las Build Tools de Visual Studio con C++ y Rust.
 # Rust se queda instalado: el editor lo usa para compilar los scripts de cada proyecto.
-# Para actualizar, vuelve a ejecutarlo.
+# Actualizaciones: el editor lo relanza con -Actualizar -EsperarPid <su pid> -Relanzar. Así no pregunta
+# ni instala requisitos, compila en app.nuevo, escribe LISTO y, cuando el editor se cierra, cambia app\
+# por la versión nueva y lo vuelve a abrir.
 # Se guarda sin BOM a propósito: `irm | iex` no lo admite.
 param(
     [string]$Repo = 'https://github.com/evilrender23/Maker-Studio',
     [string]$Rama = 'main',
-    [string]$Destino = (Join-Path $env:LOCALAPPDATA 'MakerStudio')
+    [string]$Destino = (Join-Path $env:LOCALAPPDATA 'MakerStudio'),
+    [switch]$Actualizar,
+    [int]$EsperarPid = 0,
+    [switch]$Relanzar
 )
 
 # PowerShell 5.1 lee como ANSI un .ps1 sin BOM y estropearía los acentos: se vuelve a leer en UTF-8.
@@ -35,6 +41,12 @@ if ('ñ'.Length -ne 1) {
 }
 
 $ErrorActionPreference = 'Stop'
+$interactivo = -not $Actualizar
+if ($Actualizar) {
+    # Sin nadie delante, git no debe quedarse esperando credenciales: mejor que falle y lo diga.
+    $env:GIT_TERMINAL_PROMPT = '0'
+    $env:GCM_INTERACTIVE = 'never'
+}
 $repoIndicado = [bool]($PSBoundParameters -and $PSBoundParameters.ContainsKey('Repo'))
 # Ejecutado desde un clon de Maker Studio y sin -Repo: el mismo repositorio (un fork, una copia local).
 $propio = if ($PSCommandPath) { Split-Path $PSCommandPath } elseif ($relectura) { Split-Path $relectura }
@@ -51,6 +63,9 @@ $nuevo = Join-Path $Destino 'app.nuevo'
 $anterior = Join-Path $Destino 'app.anterior'
 $registro = Join-Path $Destino 'registro'
 $logCompilacion = Join-Path $registro 'compilacion.log'
+$log = Join-Path $registro 'actualizacion.log'
+# El editor lo deja si se cierra sin aplicar la actualización: se cambia de versión, pero no se abre.
+$noRelanzar = Join-Path $registro 'no-relanzar'
 $cerrojoRuta = Join-Path $registro 'instalar.lock'
 $script:cerrojo = $null
 $toolchain = 'stable-x86_64-pc-windows-msvc'
@@ -60,8 +75,13 @@ $TOTAL = 6
 $utf8 = New-Object System.Text.UTF8Encoding $false
 $script:salidaUltima = @()
 
+function Anotar([string]$linea) {
+    [IO.File]::AppendAllText($log, "$linea`r`n", $utf8)
+}
+
 function Paso([int]$n, [string]$texto) {
-    Write-Host "[$n/$TOTAL] $texto" -ForegroundColor Cyan
+    Anotar "PASO $n/$TOTAL $texto"
+    if ($interactivo) { Write-Host "[$n/$TOTAL] $texto" -ForegroundColor Cyan }
 }
 
 # Ejecuta un programa con su salida en pantalla y en compilacion.log.
@@ -76,7 +96,7 @@ function Ejecutar([string]$exe, [string[]]$argumentos, [string]$carpeta = $codig
             $texto = "$_"
             $lineas.Add($texto)
             [IO.File]::AppendAllText($logCompilacion, "$texto`r`n", $utf8)
-            Write-Host $texto -ForegroundColor DarkGray
+            if ($interactivo) { Write-Host $texto -ForegroundColor DarkGray }
         }
         $salida = $LASTEXITCODE
         $script:salidaUltima = $lineas
@@ -143,6 +163,7 @@ function Comprobar-Requisitos {
     $faltan = @($requisitos | Where-Object { -not (& $_.Hay) })
     if (-not $faltan) { return }
     $nombres = ($faltan | ForEach-Object { $_.Nombre }) -join ', '
+    if (-not $interactivo) { throw "Falta $nombres. Ejecuta instalar.ps1 en una consola para instalarlo." }
     if (-not (Tiene winget)) { throw "Falta $nombres y no hay winget para instalarlo: instálalo a mano y vuelve a ejecutar el instalador." }
     Write-Host "Falta: $nombres" -ForegroundColor Yellow
     $respuesta = Read-Host '¿Instalarlo con winget? [T]odo / [u]no a uno / [n]ada'
@@ -188,11 +209,19 @@ function Descargar-Codigo {
 }
 
 # No se puede cambiar app\ con el editor o un juego abiertos (Windows bloquea los .exe en uso).
+function Esperar-Pid {
+    if ($EsperarPid) {
+        $proceso = Get-Process -Id $EsperarPid -ErrorAction SilentlyContinue
+        if ($proceso) { $proceso.WaitForExit() }
+    }
+}
+
 function Esperar-Cierre {
+    Esperar-Pid
     $avisado = $false
     while (Get-Process maker-studio, maker-player -ErrorAction SilentlyContinue |
            Where-Object { $_.Path -and $_.Path.StartsWith("$app\", [StringComparison]::OrdinalIgnoreCase) }) {
-        if (-not $avisado) {
+        if ($interactivo -and -not $avisado) {
             Write-Host 'Cierra Maker Studio y los juegos abiertos desde él para terminar la instalación…' -ForegroundColor Yellow
             $avisado = $true
         }
@@ -229,15 +258,32 @@ function Crear-Acceso {
     $lnk.Save()
 }
 
+function Abrir-Cerrojo {
+    try { [IO.File]::Open($cerrojoRuta, 'OpenOrCreate', 'ReadWrite', 'None') } catch { $null }
+}
+
+# Si otra instalación tiene el cerrojo (normalmente una que espera a que se cierre el editor), se la
+# sustituye: esta compila lo último de la rama y hace lo mismo que ella.
 function Tomar-Cerrojo {
-    try { $script:cerrojo = [IO.File]::Open($cerrojoRuta, 'OpenOrCreate', 'ReadWrite', 'None') }
-    catch { throw 'Ya hay otra instalación de Maker Studio en marcha.' }
+    $script:cerrojo = Abrir-Cerrojo
+    if ($script:cerrojo) { return }
+    $ErrorActionPreference = 'Continue'
+    $otras = @(Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe' OR Name = 'pwsh.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.ProcessId -ne $PID -and "$($_.CommandLine)" -match 'instalar\.ps1' })
+    if (-not $otras) { throw 'Ya hay otra instalación de Maker Studio en marcha.' }
+    foreach ($otra in $otras) { & taskkill.exe /PID $otra.ProcessId /T /F 2>&1 | Out-Null }
+    for ($i = 0; $i -lt 40 -and -not $script:cerrojo; $i++) {
+        Start-Sleep -Milliseconds 500
+        $script:cerrojo = Abrir-Cerrojo
+    }
+    if (-not $script:cerrojo) { throw 'Ya hay otra instalación de Maker Studio en marcha.' }
 }
 
 function Principal {
     New-Item -ItemType Directory -Force $registro | Out-Null
     Tomar-Cerrojo
     [IO.File]::WriteAllText($logCompilacion, '', $utf8)
+    [IO.File]::WriteAllText($log, '', $utf8)
 
     Paso 1 'Comprobando Git, las Build Tools de C++ y Rust'
     Comprobar-Requisitos
@@ -267,8 +313,9 @@ function Principal {
     # El editor lanza y exporta los juegos con el maker-player.exe que tenga al lado: van juntos.
     Copy-Item (Join-Path $compilado 'maker-studio.exe'), (Join-Path $compilado 'maker-player.exe') $nuevo
     [IO.File]::WriteAllText((Join-Path $nuevo 'version.json'), ($version | ConvertTo-Json), $utf8)
+    Anotar "LISTO $commit"
     if (Test-Path $app) {
-        Paso 5 'Cambiando a la versión nueva'
+        Paso 5 'Esperando a que se cierre el editor para cambiar de versión'
         Esperar-Cierre
         if (Test-Path $anterior) { Reintentar { Remove-Item $anterior -Recurse -Force } }
         Reintentar { Rename-Item $app 'app.anterior' }
@@ -282,9 +329,19 @@ function Principal {
         Move-Item $nuevo $app
     }
 
-    Paso 6 'Añadiendo los comandos al PATH y Maker Studio al menú Inicio'
-    $pathNuevo = Agregar-PathUsuario $app
-    Crear-Acceso
+    $pathNuevo = $false
+    if ($Actualizar) {
+        # El PATH y el acceso del menú Inicio apuntan a app\, que no cambia de ruta: ya valen.
+        Paso 6 'Versión nueva instalada'
+    } else {
+        Paso 6 'Añadiendo los comandos al PATH y Maker Studio al menú Inicio'
+        $pathNuevo = Agregar-PathUsuario $app
+        Crear-Acceso
+    }
+    Anotar "APLICADO $commit"
+    if ($Relanzar -and -not (Test-Path $noRelanzar)) { Start-Process (Join-Path $app 'maker-studio.exe') }
+    Remove-Item $noRelanzar -ErrorAction SilentlyContinue
+    if (-not $interactivo) { return }
 
     Write-Host "Maker Studio $($commit.Substring(0, 7)) instalado en $app." -ForegroundColor Green
     if ($pathNuevo) { Write-Host 'Abre una consola nueva para usar maker-studio y maker-player desde cualquier carpeta.' -ForegroundColor Yellow }
@@ -300,7 +357,8 @@ try {
 } catch {
     $resultado = 1
     $texto = ($_.Exception.Message -replace '\s*[\r\n]+\s*', ' ').Trim()
-    Write-Host "ERROR: $texto" -ForegroundColor Red
+    try { Anotar "ERROR $texto" } catch { }
+    if ($interactivo) { Write-Host "ERROR: $texto" -ForegroundColor Red }
 } finally {
     if ($script:cerrojo) { $script:cerrojo.Dispose() }
     try { [Console]::OutputEncoding = $codificacion } catch { }

@@ -8,6 +8,7 @@ mod gizmo;
 mod hub;
 mod panels;
 mod theme;
+mod update;
 mod viewport;
 
 use maker_engine::{Key, Project};
@@ -27,6 +28,8 @@ const USAGE: &str = "Uso: maker-studio [PROYECTO] [opciones]
   --gizmo move|rotate|scale
   --size ANCHOxALTO        tamaño de ventana
   --export                 exporta el juego a PROYECTO/export/ y sale
+  --actualizar             busca y compila la última versión de GitHub (copias instaladas)
+  --version                commit y rama de esta copia
 ";
 
 fn parse_key(s: &str) -> Option<Key> {
@@ -50,6 +53,24 @@ fn parse_key(s: &str) -> Option<Key> {
 
 fn main() -> eframe::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    // Sin ventana: actualizar desde la terminal o ver la versión.
+    match std::env::args().nth(1).as_deref() {
+        Some("--actualizar") => {
+            let upd = update::Actualizador::default();
+            match upd.sin_ventana() {
+                Ok(()) => std::process::exit(0),
+                Err(e) => {
+                    eprintln!("No se pudo actualizar: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some("--version") => {
+            println!("Maker Studio {} {}", env!("CARGO_PKG_VERSION"), update::descripcion_version());
+            return Ok(());
+        }
+        _ => {}
+    }
     let mut args = std::env::args().skip(1);
     let mut project: Option<PathBuf> = None;
     let mut new_demo: Option<PathBuf> = None;

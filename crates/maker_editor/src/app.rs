@@ -38,6 +38,8 @@ pub struct MakerApp {
     title: String,
     close_prompt: bool,
     quitting: bool,
+    upd: crate::update::Actualizador,
+    upd_oculta: bool,
 }
 
 impl MakerApp {
@@ -52,7 +54,12 @@ impl MakerApp {
             hub.config.touch(&p.root);
             Editor::open(p, &rs)
         });
-        Self { rs, hub, ed, auto, last: Instant::now(), title: String::new(), close_prompt: false, quitting: false }
+        let upd = crate::update::Actualizador::default();
+        // En capturas automáticas no se busca nada en segundo plano.
+        if auto.screenshot.is_none() && !auto.export {
+            upd.vigilar(&cc.egui_ctx);
+        }
+        Self { rs, hub, ed, auto, last: Instant::now(), title: String::new(), close_prompt: false, quitting: false, upd, upd_oculta: false }
     }
 
     fn set_title(&mut self, ctx: &egui::Context) {
@@ -158,6 +165,7 @@ impl eframe::App for MakerApp {
             self.close_prompt = true;
         }
 
+        self.update_bar(ui);
         let Some(ed) = &mut self.ed else {
             if let Some(p) = self.hub.ui(ui) {
                 self.ed = Some(Editor::open(p, &self.rs));
@@ -175,7 +183,7 @@ impl eframe::App for MakerApp {
 
         let mut back_to_hub = false;
         egui::Panel::top("menu").frame(egui::Frame::new().fill(theme::CHROME).inner_margin(egui::Margin::symmetric(8, 3))).show(ui, |ui| {
-            back_to_hub = menu_bar(ed, ui);
+            back_to_hub = menu_bar(ed, ui, &self.upd, &mut self.upd_oculta);
         });
         egui::Panel::top("toolbar")
             .frame(egui::Frame::new().fill(theme::CHROME).inner_margin(egui::Margin::symmetric(8, 4)).stroke(egui::Stroke::new(1.0, theme::STROKE4)))
@@ -263,6 +271,7 @@ impl eframe::App for MakerApp {
     }
 
     fn on_exit(&mut self) {
+        self.upd.al_salir();
         if let Some(ed) = &mut self.ed {
             ed.stop();
         }
@@ -270,6 +279,79 @@ impl eframe::App for MakerApp {
 
     fn clear_color(&self, _v: &egui::Visuals) -> [f32; 4] {
         theme::CHROME.to_normalized_gamma_f32()
+    }
+}
+
+impl MakerApp {
+    /// Barra fina bajo el menú mientras se busca, compila o está lista una actualización.
+    fn update_bar(&mut self, ui: &mut Ui) {
+        use crate::update::Estado;
+        let estado = self.upd.estado();
+        let mostrar = match &estado {
+            Estado::Inactiva | Estado::Buscando => false,
+            Estado::AlDia | Estado::Error(_) | Estado::Nueva { .. } => !self.upd_oculta,
+            Estado::Compilando { .. } | Estado::Lista { .. } => true,
+        };
+        if !mostrar {
+            return;
+        }
+        let ctx = ui.ctx().clone();
+        let frame = egui::Frame::new().fill(theme::ACCENT_SOFT).inner_margin(egui::Margin::symmetric(10, 4)).stroke(egui::Stroke::new(1.0, theme::STROKE3));
+        let mut cerrar = false;
+        egui::Panel::top("update_bar").frame(frame).show(ui, |ui| {
+            ui.horizontal(|ui| match &estado {
+                Estado::AlDia => {
+                    ui.colored_label(theme::GREEN, format!("✔ Maker Studio está al día ({})", crate::update::descripcion_version()));
+                    if ui.small_button("✕").clicked() {
+                        self.upd_oculta = true;
+                    }
+                }
+                Estado::Error(e) => {
+                    ui.colored_label(theme::RED, format!("No se pudo actualizar: {e}"));
+                    if ui.small_button("✕").clicked() {
+                        self.upd_oculta = true;
+                    }
+                }
+                Estado::Nueva { ultimo } => {
+                    ui.label(format!("Hay una versión nueva: {} — {}", crate::update::corto(&ultimo.sha), ultimo.mensaje.clone().unwrap_or_default()));
+                    if ui.add(egui::Button::new(RichText::new("Compilar e instalar").color(egui::Color32::WHITE)).fill(theme::ACCENT)).clicked()
+                        && let Err(e) = self.upd.instalar()
+                    {
+                        log::error("actualizador", e);
+                    }
+                    if ui.small_button("Ahora no").clicked() {
+                        self.upd_oculta = true;
+                    }
+                }
+                Estado::Compilando { paso, total, texto } => {
+                    ui.spinner();
+                    ui.label(if *total > 0 { format!("Actualizando Maker Studio en segundo plano · [{paso}/{total}] {texto}") } else { "Actualizando Maker Studio en segundo plano…".into() });
+                }
+                Estado::Lista { commit } => {
+                    ui.colored_label(theme::GREEN, format!("La versión {commit} está lista. Se aplica al reiniciar el editor."));
+                    if ui.add(egui::Button::new(RichText::new("Reiniciar ahora").color(egui::Color32::WHITE)).fill(theme::ACCENT)).clicked() {
+                        cerrar = true;
+                    }
+                }
+                _ => {}
+            });
+        });
+        if cerrar {
+            if let Some(ed) = &mut self.ed {
+                ed.stop();
+                if ed.dirty {
+                    ed.save_scene();
+                }
+                if let Some(s) = &ed.script
+                    && s.text != s.saved
+                {
+                    ed.save_script();
+                }
+            }
+            self.upd.aplicar();
+            self.quitting = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
     }
 }
 
@@ -313,7 +395,7 @@ fn shortcuts(ed: &mut Editor, ctx: &egui::Context) {
     });
 }
 
-fn menu_bar(ed: &mut Editor, ui: &mut Ui) -> bool {
+fn menu_bar(ed: &mut Editor, ui: &mut Ui, upd: &crate::update::Actualizador, upd_oculta: &mut bool) -> bool {
     let mut hub = false;
     egui::MenuBar::new().ui(ui, |ui| {
         ui.label(RichText::new("◆ Maker Studio").strong().color(theme::ACCENT));
@@ -395,6 +477,22 @@ fn menu_bar(ed: &mut Editor, ui: &mut Ui) -> bool {
             }
         });
         ui.menu_button("Ayuda", |ui| {
+            ui.label(RichText::new(format!("Versión {}", crate::update::descripcion_version())).color(theme::TEXT3));
+            let instalada = crate::update::version_instalada().is_some();
+            if ui
+                .add_enabled(instalada, egui::Button::new("Buscar actualizaciones"))
+                .on_disabled_hover_text("Solo las copias instaladas con instalar.sh / instalar.ps1 se actualizan solas")
+                .clicked()
+            {
+                *upd_oculta = false;
+                upd.buscar_ahora(crate::update::automatico());
+                ui.close();
+            }
+            let mut auto = crate::update::automatico();
+            if ui.add_enabled(instalada, egui::Checkbox::new(&mut auto, "Actualizar automáticamente")).changed() {
+                crate::update::cambiar_automatico(auto);
+            }
+            ui.separator();
             ui.label(RichText::new("Controles del viewport").strong());
             for (k, v) in [
                 ("Clic derecho + WASDQE", "volar (Shift = rápido, rueda = velocidad)"),

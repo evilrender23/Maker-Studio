@@ -8,6 +8,7 @@ mod camera;
 mod code;
 mod contenido_ui;
 mod editor;
+mod estilos_ui;
 mod gizmo;
 mod hub;
 mod panels;
@@ -18,6 +19,8 @@ mod theme;
 mod titlebar;
 mod update;
 mod viewport;
+mod ui_editor;
+mod ui_inspector;
 
 use maker_engine::{Key, Project};
 use std::path::PathBuf;
@@ -33,7 +36,7 @@ const USAGE: &str = "Uso: maker-studio [PROYECTO] [opciones]
   --play                   entra en Play al arrancar
   --hold TECLA             mantiene una tecla pulsada durante Play (W, A, Space…)
   --scene ESCENA           abre esa escena del proyecto (p. ej. scenes/biblioteca.mscene)
-  --tab content|library|console|script
+  --tab content|library|console|script|estilos
   --gizmo move|rotate|scale
   --size ANCHOxALTO        tamaño de ventana
   --export                 exporta el juego a PROYECTO/export/ y sale
@@ -124,6 +127,7 @@ fn main() -> eframe::Result<()> {
                 auto.tab = match args.next().as_deref() {
                     Some("console") => Some(editor::BottomTab::Console),
                     Some("script") => Some(editor::BottomTab::Script),
+                    Some("estilos") => Some(editor::BottomTab::Estilos),
                     Some("library") | Some("biblioteca") => Some(editor::BottomTab::Library),
                     _ => Some(editor::BottomTab::Content),
                 }

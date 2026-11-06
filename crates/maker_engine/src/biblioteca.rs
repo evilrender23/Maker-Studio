@@ -243,19 +243,22 @@ pub fn dependencies(model: &Path) -> Vec<PathBuf> {
 /// Copia a `out/biblioteca/` los recursos de la biblioteca que usan las
 /// escenas (con sus texturas y la licencia de cada pack). Devuelve las rutas
 /// relativas copiadas.
-pub fn export_used(scenes: &[SceneFile], out: &Path) -> Result<Vec<String>, String> {
-    if scenes.iter().all(|s| refs_in_scene(s).is_empty()) {
+///
+/// `extra`: otras rutas `biblioteca://` usadas (imágenes y fuentes de la interfaz).
+pub fn export_used(scenes: &[SceneFile], extra: &BTreeSet<String>, out: &Path) -> Result<Vec<String>, String> {
+    if extra.is_empty() && scenes.iter().all(|s| refs_in_scene(s).is_empty()) {
         return Ok(Vec::new());
     }
     let lib = library_dir().ok_or("no se encuentra la biblioteca del motor")?;
-    export_used_from(&lib, scenes, out)
+    export_used_from(&lib, scenes, extra, out)
 }
 
-pub fn export_used_from(lib: &Path, scenes: &[SceneFile], out: &Path) -> Result<Vec<String>, String> {
+pub fn export_used_from(lib: &Path, scenes: &[SceneFile], extra: &BTreeSet<String>, out: &Path) -> Result<Vec<String>, String> {
     let mut files: BTreeSet<String> = BTreeSet::new();
     let mut packs: BTreeSet<String> = BTreeSet::new();
-    for s in scenes {
-        for r in refs_in_scene(s) {
+    let todas = scenes.iter().flat_map(refs_in_scene).chain(extra.iter().filter(|r| is_library_path(r)).cloned()).collect::<BTreeSet<String>>();
+    {
+        for r in todas {
             let rel = relative(&r).unwrap_or(&r).to_string();
             let src = lib.join(&rel);
             if !src.exists() {
@@ -264,7 +267,8 @@ pub fn export_used_from(lib: &Path, scenes: &[SceneFile], out: &Path) -> Result<
             if let Some(p) = rel.split('/').next() {
                 packs.insert(p.to_string());
             }
-            for d in dependencies(&src) {
+            let es_modelo = src.extension().is_some_and(|e| e == "glb" || e == "gltf");
+            for d in if es_modelo { dependencies(&src) } else { Vec::new() } {
                 if let Ok(r) = d.strip_prefix(lib) {
                     files.insert(r.to_string_lossy().replace('\\', "/"));
                 }

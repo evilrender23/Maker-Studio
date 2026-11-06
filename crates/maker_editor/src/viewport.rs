@@ -48,6 +48,11 @@ fn toolbar(ed: &mut Editor, ui: &mut egui::Ui) {
         ui.separator();
         ui.toggle_value(&mut ed.show_grid, "Rejilla");
         ui.toggle_value(&mut ed.shadows, "Sombras");
+        ui.separator();
+        ui.toggle_value(&mut ed.mostrar_ui, "Interfaz").on_hover_text("Dibujar la interfaz sobre la vista");
+        if !ed.is_playing() {
+            ui.add_enabled(ed.mostrar_ui, egui::Button::selectable(ed.modo_ui, "2D")).on_hover_text("Editar la interfaz: seleccionar, mover y redimensionar con el ratón").clicked().then(|| ed.modo_ui = !ed.modo_ui);
+        }
         if ed.is_playing() {
             ui.separator();
             ui.toggle_value(&mut ed.show_game_view, "Cámara del juego").on_hover_text("Ver desde la cámara principal o desde la del editor");
@@ -99,6 +104,10 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, rs: &egui_wgpu::RenderState) {
         }
     }
     ed.renderer.render(&ed.scene, &rview, &opts);
+    // Interfaz encima de la imagen final.
+    let dt_ui = ui.ctx().input(|i| i.stable_dt).min(0.1);
+    ed.input.pantalla = Vec2::new(pw as f32, ph as f32);
+    crate::ui_editor::pintar(ed, (pw, ph), dt_ui);
 
     // Textura → egui.
     if let Some(view) = ed.renderer.output_view() {
@@ -144,6 +153,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, rs: &egui_wgpu::RenderState) {
                             }
                         }
                         egui::Event::MouseMoved(d) => ed.input.mouse_delta += Vec2::new(d.x, d.y),
+                        egui::Event::Text(t) => ed.input.texto.push_str(t),
                         _ => {}
                     }
                 }
@@ -155,8 +165,9 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, rs: &egui_wgpu::RenderState) {
                     i.pointer.button_down(egui::PointerButton::Secondary),
                     i.pointer.button_down(egui::PointerButton::Middle),
                 ];
+                // Píxeles físicos de la vista, como la interfaz.
                 if let Some(p) = i.pointer.hover_pos() {
-                    ed.input.mouse_pos = Vec2::new(p.x - rect.min.x, p.y - rect.min.y);
+                    ed.input.mouse_pos = Vec2::new((p.x - rect.min.x) * ppp, (p.y - rect.min.y) * ppp);
                 }
             });
         }
@@ -203,9 +214,17 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, rs: &egui_wgpu::RenderState) {
             }
         }
 
+        let modo_2d = ed.modo_ui && ed.mostrar_ui && !ed.is_playing();
+        if modo_2d {
+            crate::ui_editor::editar(ed, ui, &resp, rect, &painter);
+        } else if ed.mostrar_ui {
+            crate::ui_editor::contorno_seleccion(ed, &painter, rect, ppp);
+        }
+        let es_ui = |ed: &Editor, s: EntityId| ed.scene.has::<maker_engine::ui::RectUi>(s) || ed.scene.has::<maker_engine::ui::Lienzo>(s);
+
         // Gizmo.
         let snap_held = ctx.input(|i| i.modifiers.command);
-        if let Some(sel) = ed.selection.filter(|s| ed.scene.contains(*s)) {
+        if let Some(sel) = ed.selection.filter(|s| ed.scene.contains(*s) && !modo_2d && !es_ui(ed, *s)) {
             let world = ed.scene.global(sel);
             let mouse = ctx.input(|i| i.pointer.hover_pos());
             let mut hovered = None;
@@ -250,6 +269,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, rs: &egui_wgpu::RenderState) {
 
         // Selección por clic.
         if resp.clicked_by(egui::PointerButton::Primary)
+            && !modo_2d
             && !alt
             && !ed.gizmo.is_dragging()
             && let Some(m) = resp.interact_pointer_pos()
@@ -285,7 +305,11 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, rs: &egui_wgpu::RenderState) {
     }
 
     // Soltar un modelo del explorador de contenido.
-    if let Some(p) = resp.dnd_release_payload::<AssetDrag>() {
+    if let Some(p) = resp.dnd_release_payload::<AssetDrag>()
+        && p.0.ends_with(&format!(".{}", maker_engine::ui::EXT_PLANTILLA))
+    {
+        ed.instanciar_plantilla(&p.0, None);
+    } else if let Some(p) = resp.dnd_release_payload::<AssetDrag>() {
         let id = ed.add_model(&p.0);
         if let Some(m) = resp.hover_pos() {
             let ray = view.ray(m);

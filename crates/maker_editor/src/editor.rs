@@ -6,8 +6,11 @@ use crate::gizmo::Gizmo;
 use glam::Vec3;
 use maker_engine::components::*;
 use maker_engine::scene::SceneFile;
+use maker_engine::ui::plantilla::PlantillaUi;
+use maker_engine::ui::{self, SistemaUi};
 use maker_engine::{Input, Project, Runtime, Scene, ScriptLib, log};
-use maker_render::SceneRenderer;
+use maker_render::{SceneRenderer, UiRenderer};
+use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -20,27 +23,37 @@ pub enum BottomTab {
     Library,
     Console,
     Script,
+    Estilos,
 }
 
-/// Historial de deshacer basado en instantáneas de la escena (simple y
-/// exacto: cada paso es la escena completa serializada).
+/// Estado guardado en el historial: la escena y los documentos de estilos y
+/// temas de interfaz (ruta → JSON), que también se editan desde el editor.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Instantanea {
+    pub escena: SceneFile,
+    pub ui: BTreeMap<String, String>,
+}
+
+/// Historial de deshacer basado en instantáneas (simple y exacto: cada paso
+/// es la escena completa serializada más los estilos de interfaz).
 #[derive(Default)]
 pub struct Undo {
-    undo: Vec<(String, SceneFile)>,
-    redo: Vec<(String, SceneFile)>,
-    pub committed: Option<SceneFile>,
+    undo: Vec<(String, Instantanea)>,
+    redo: Vec<(String, Instantanea)>,
+    pub committed: Option<Instantanea>,
 }
 
 impl Undo {
     pub const LIMIT: usize = 200;
-    pub fn reset(&mut self, scene: &Scene) {
+    pub fn reset_con(&mut self, scene: &Scene, ui: BTreeMap<String, String>) {
         self.undo.clear();
         self.redo.clear();
-        self.committed = Some(scene.to_file());
+        self.committed = Some(Instantanea { escena: scene.to_file(), ui });
     }
-    /// Si la escena cambió respecto a la última confirmada, apila el estado anterior.
-    pub fn commit(&mut self, scene: &Scene, label: &str) -> bool {
-        let now = scene.to_file();
+    /// Si la escena o los documentos de interfaz cambiaron respecto a lo último
+    /// confirmado, apila el estado anterior.
+    pub fn commit_con(&mut self, scene: &Scene, ui: BTreeMap<String, String>, label: &str) -> bool {
+        let now = Instantanea { escena: scene.to_file(), ui };
         match &self.committed {
             Some(prev) if *prev == now => false,
             Some(prev) => {
@@ -58,14 +71,14 @@ impl Undo {
             }
         }
     }
-    pub fn undo(&mut self) -> Option<(String, SceneFile)> {
+    pub fn undo(&mut self) -> Option<(String, Instantanea)> {
         let (label, prev) = self.undo.pop()?;
         if let Some(cur) = self.committed.replace(prev.clone()) {
             self.redo.push((label.clone(), cur));
         }
         Some((label, prev))
     }
-    pub fn redo(&mut self) -> Option<(String, SceneFile)> {
+    pub fn redo(&mut self) -> Option<(String, Instantanea)> {
         let (label, next) = self.redo.pop()?;
         if let Some(cur) = self.committed.replace(next.clone()) {
             self.undo.push((label.clone(), cur));
@@ -162,6 +175,18 @@ pub struct Editor {
     pub viewport_rect: egui::Rect,
     /// Animación en modo edición (vista previa del Animator seleccionado).
     pub animation: maker_engine::animation::Animation,
+    /// Interfaz en modo edición (estilos y temas del proyecto, layout para dibujarla y editarla).
+    pub ui: SistemaUi,
+    pub ui_render: Option<UiRenderer>,
+    /// Modo de edición 2D de la interfaz en el viewport.
+    pub modo_ui: bool,
+    /// Dibujar la interfaz sobre el viewport.
+    pub mostrar_ui: bool,
+    pub ui_arrastre: Option<crate::ui_editor::Arrastre>,
+    /// Editor de estilos y temas.
+    pub estilos: crate::estilos_ui::EstilosUi,
+    /// Plantillas leídas (para calcular los retoques de cada instancia).
+    plantillas: BTreeMap<String, Option<PlantillaUi>>,
 }
 
 impl Editor {
@@ -176,6 +201,11 @@ impl Editor {
         };
         let mut renderer = SceneRenderer::new(&rs.device, &rs.queue);
         renderer.project_root = Some(project.root.clone());
+        let ui = SistemaUi::del_proyecto(&project.root, &project.file.tema_ui);
+        let mut scene = scene;
+        if ui::plantilla::sincronizar_todas(&mut scene, &project.root) > 0 {
+            log::info("interfaz", "instancias de plantillas puestas al día");
+        }
         let mut ed = Editor {
             project,
             scene,
@@ -221,8 +251,16 @@ impl Editor {
             contenido: Default::default(),
             viewport_rect: egui::Rect::NOTHING,
             animation: Default::default(),
+            ui,
+            ui_render: None,
+            modo_ui: false,
+            mostrar_ui: true,
+            ui_arrastre: None,
+            estilos: Default::default(),
+            plantillas: BTreeMap::new(),
         };
-        ed.undo.reset(&ed.scene);
+        let docs = ed.docs_ui();
+        ed.undo.reset_con(&ed.scene, docs);
         ed.reload_scripts(false);
         log::info("editor", format!("proyecto abierto: {} ({})", ed.project.name(), ed.project.root.display()));
         ed
@@ -259,11 +297,13 @@ impl Editor {
         }
         let path = self.project.root.join(rel);
         match Scene::load(&path) {
-            Ok(s) => {
+            Ok(mut s) => {
+                ui::plantilla::sincronizar_todas(&mut s, &self.project.root);
                 self.scene = s;
                 self.scene_path = path;
                 self.selection = None;
-                self.undo.reset(&self.scene);
+                let docs = self.docs_ui();
+                self.undo.reset_con(&self.scene, docs);
                 self.dirty = false;
                 log::info("editor", format!("escena abierta: {rel}"));
             }
@@ -291,9 +331,232 @@ impl Editor {
         if self.is_playing() {
             return;
         }
-        if self.undo.commit(&self.scene, label) {
+        self.actualizar_retoques();
+        let docs = self.docs_ui();
+        // Los estilos y temas se guardan al confirmar (son assets, no parte de la escena).
+        let antes = self.undo.committed.as_ref().map(|c| c.ui.clone()).unwrap_or_default();
+        if antes != docs {
+            for (ruta, txt) in &docs {
+                if antes.get(ruta) != Some(txt) {
+                    let p = self.project.root.join(ruta);
+                    if let Some(d) = p.parent() {
+                        let _ = std::fs::create_dir_all(d);
+                    }
+                    if let Err(e) = std::fs::write(&p, txt) {
+                        log::error("interfaz", format!("{ruta}: {e}"));
+                    }
+                }
+            }
+            for ruta in antes.keys().filter(|r| !docs.contains_key(*r)) {
+                let _ = std::fs::remove_file(self.project.root.join(ruta));
+            }
+        }
+        let escena_antes = self.undo.committed.as_ref().map(|c| c.escena.clone());
+        if self.undo.commit_con(&self.scene, docs, label) && escena_antes.as_ref() != Some(&self.scene.to_file()) {
             self.dirty = true;
         }
+    }
+
+    /// Estilos y temas de interfaz como texto (para el historial).
+    pub fn docs_ui(&self) -> BTreeMap<String, String> {
+        let r = &self.ui.recursos;
+        let mut out = BTreeMap::new();
+        for (ruta, h) in &r.hojas {
+            out.insert(ruta.clone(), serde_json::to_string_pretty(h).unwrap_or_default());
+        }
+        for (n, t) in &r.temas {
+            let ruta = r.rutas_temas.get(n).cloned().unwrap_or_else(|| format!("ui/temas/{n}.mtema"));
+            out.insert(ruta, serde_json::to_string_pretty(t).unwrap_or_default());
+        }
+        out
+    }
+
+    /// Escribe a disco los documentos de interfaz que cambiaron (y borra los
+    /// que ya no están) y los recarga en memoria.
+    pub fn aplicar_docs_ui(&mut self, docs: &BTreeMap<String, String>) {
+        let actuales = self.docs_ui();
+        for (ruta, txt) in docs {
+            if actuales.get(ruta) != Some(txt) {
+                let p = self.project.root.join(ruta);
+                if let Some(d) = p.parent() {
+                    let _ = std::fs::create_dir_all(d);
+                }
+                if let Err(e) = std::fs::write(&p, txt) {
+                    log::error("interfaz", format!("{ruta}: {e}"));
+                }
+            }
+        }
+        for ruta in actuales.keys().filter(|r| !docs.contains_key(*r)) {
+            let _ = std::fs::remove_file(self.project.root.join(ruta));
+        }
+        let r = &mut self.ui.recursos;
+        r.hojas.clear();
+        r.temas.clear();
+        r.rutas_temas.clear();
+        for (ruta, txt) in docs {
+            if ruta.ends_with(&format!(".{}", ui::EXT_ESTILO)) {
+                if let Ok(h) = serde_json::from_str(txt) {
+                    r.hojas.insert(ruta.clone(), h);
+                }
+            } else if let Ok(t) = serde_json::from_str(txt) {
+                let n = std::path::Path::new(ruta).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                r.rutas_temas.insert(n.clone(), ruta.clone());
+                r.temas.insert(n, t);
+            }
+        }
+        r.reindexar();
+    }
+
+    /// Plantilla por ruta (cacheada).
+    pub fn plantilla(&mut self, ruta: &str) -> Option<PlantillaUi> {
+        let raiz = self.project.root.clone();
+        self.plantillas
+            .entry(ruta.to_string())
+            .or_insert_with(|| match PlantillaUi::cargar(&raiz.join(ruta)) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    log::warn("interfaz", e);
+                    None
+                }
+            })
+            .clone()
+    }
+
+    /// Recalcula los retoques de las instancias de plantillas tras una edición.
+    fn actualizar_retoques(&mut self) {
+        let raices: Vec<(EntityId, String)> = self.scene.world.query::<(&EntityId, &ui::InstanciaUi)>().iter().map(|(id, i)| (*id, i.plantilla.clone())).collect();
+        for (id, ruta) in raices {
+            if let Some(p) = self.plantilla(&ruta) {
+                ui::plantilla::actualizar_overrides(&mut self.scene, id, &p);
+            }
+        }
+    }
+
+    /// Guarda el subárbol de `id` como plantilla `ui/plantillas/<nombre>.mui` y lo
+    /// convierte en una instancia suya.
+    pub fn guardar_como_plantilla(&mut self, id: EntityId) {
+        let Some(p) = PlantillaUi::desde_escena(&self.scene, id) else { return };
+        let nombre: String = self.scene.name(id).chars().map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).collect();
+        let mut rel = format!("{}/plantillas/{nombre}.{}", ui::DIR_UI, ui::EXT_PLANTILLA);
+        let mut k = 1;
+        while self.project.root.join(&rel).exists() {
+            k += 1;
+            rel = format!("{}/plantillas/{nombre}_{k}.{}", ui::DIR_UI, ui::EXT_PLANTILLA);
+        }
+        if let Err(e) = p.guardar(&self.project.root.join(&rel)) {
+            log::error("interfaz", e);
+            return;
+        }
+        self.vincular(id, &rel, &p);
+        self.plantillas.insert(rel.clone(), Some(p));
+        self.commit("Guardar como plantilla");
+        log::info("interfaz", format!("plantilla guardada: {rel}"));
+    }
+
+    /// Marca un subárbol como instancia de una plantilla recién guardada desde él.
+    fn vincular(&mut self, raiz: EntityId, rel: &str, p: &PlantillaUi) {
+        let h = self.scene.hierarchy();
+        let mut orden = vec![raiz];
+        let mut i = 0;
+        while i < orden.len() {
+            orden.extend_from_slice(h.children_of(orden[i]));
+            i += 1;
+        }
+        for (k, id) in orden.iter().enumerate() {
+            if let Some(r) = p.entidades.get(k) {
+                self.scene.insert(*id, ui::OrigenPlantilla(r.id.0));
+            }
+        }
+        self.scene.insert(raiz, ui::InstanciaUi { plantilla: rel.to_string(), overrides: Default::default() });
+    }
+
+    /// Escribe la instancia `raiz` como su plantilla y pone al día las demás instancias.
+    pub fn aplicar_a_plantilla(&mut self, raiz: EntityId) {
+        let Some(inst) = self.scene.get::<ui::InstanciaUi>(raiz) else { return };
+        let Some(p) = PlantillaUi::desde_escena(&self.scene, raiz) else { return };
+        if let Err(e) = p.guardar(&self.project.root.join(&inst.plantilla)) {
+            log::error("interfaz", e);
+            return;
+        }
+        // Los ids locales pasan a ser los del orden actual.
+        self.vincular(raiz, &inst.plantilla, &p);
+        self.plantillas.insert(inst.plantilla.clone(), Some(p.clone()));
+        let otras: Vec<EntityId> = self.scene.world.query::<(&EntityId, &ui::InstanciaUi)>().iter().filter(|(id, i)| **id != raiz && i.plantilla == inst.plantilla).map(|(id, _)| *id).collect();
+        for o in otras {
+            ui::plantilla::sincronizar(&mut self.scene, o, &p);
+        }
+        self.commit("Aplicar a la plantilla");
+    }
+
+    /// Vuelve a los valores de la plantilla (todos o un retoque).
+    pub fn revertir_plantilla(&mut self, raiz: EntityId, retoque: Option<&str>) {
+        let Some(inst) = self.scene.get::<ui::InstanciaUi>(raiz) else { return };
+        let Some(p) = self.plantilla(&inst.plantilla) else { return };
+        if let Some(mut i) = self.scene.get_mut::<ui::InstanciaUi>(raiz) {
+            match retoque {
+                Some(r) => {
+                    i.overrides.remove(r);
+                }
+                None => i.overrides.clear(),
+            }
+        }
+        ui::plantilla::sincronizar(&mut self.scene, raiz, &p);
+        self.commit("Revertir a la plantilla");
+    }
+
+    /// Instancia una plantilla `.mui` bajo `padre` (o en el lienzo de la selección).
+    pub fn instanciar_plantilla(&mut self, rel: &str, padre: Option<EntityId>) -> Option<EntityId> {
+        self.plantillas.remove(rel);
+        let p = self.plantilla(rel)?;
+        let padre = padre.or_else(|| self.lienzo_destino());
+        let id = p.instanciar(&mut self.scene, rel, padre)?;
+        self.selection = Some(id);
+        self.commit("Instanciar plantilla");
+        Some(id)
+    }
+
+    /// Dónde crear elementos de interfaz: la selección si es de interfaz, su
+    /// lienzo, o el primer lienzo de la escena (se crea uno si no hay).
+    pub fn lienzo_destino(&mut self) -> Option<EntityId> {
+        if let Some(s) = self.selection.filter(|s| self.scene.contains(*s))
+            && (self.scene.has::<ui::RectUi>(s) || self.scene.has::<ui::Lienzo>(s))
+        {
+            return Some(s);
+        }
+        let primero = self.scene.world.query::<(&EntityId, &ui::Lienzo)>().iter().map(|(i, _)| *i).min_by_key(|i| i.0);
+        if primero.is_some() {
+            return primero;
+        }
+        let l = self.scene.spawn("Lienzo");
+        self.scene.insert(l, ui::Lienzo::default());
+        Some(l)
+    }
+
+    /// Crea un elemento de interfaz.
+    pub fn crear_ui(&mut self, que: CrearUi) -> EntityId {
+        if que == CrearUi::Lienzo {
+            let id = self.scene.spawn("Lienzo");
+            self.scene.insert(id, ui::Lienzo::default());
+            self.selection = Some(id);
+            self.commit("Crear Lienzo");
+            return id;
+        }
+        let padre = self.lienzo_destino();
+        let id = self.scene.spawn(que.label());
+        let (rect, widget, cont) = que.componentes();
+        self.scene.insert(id, rect);
+        if let Some(w) = widget {
+            self.scene.insert(id, w);
+        }
+        if let Some(c) = cont {
+            self.scene.insert(id, c);
+        }
+        if let Some(p) = padre {
+            self.scene.set_parent(id, Some(p), false);
+        }
+        self.selection = Some(id);
+        self.commit(&format!("Crear {}", que.label()));
+        id
     }
 
     pub fn undo(&mut self) {
@@ -301,7 +564,8 @@ impl Editor {
             return;
         }
         if let Some((label, f)) = self.undo.undo() {
-            self.scene = Scene::from_file(&f);
+            self.scene = Scene::from_file(&f.escena);
+            self.aplicar_docs_ui(&f.ui);
             self.after_history();
             self.status = format!("Deshecho: {label}");
         }
@@ -311,7 +575,8 @@ impl Editor {
             return;
         }
         if let Some((label, f)) = self.undo.redo() {
-            self.scene = Scene::from_file(&f);
+            self.scene = Scene::from_file(&f.escena);
+            self.aplicar_docs_ui(&f.ui);
             self.after_history();
             self.status = format!("Rehecho: {label}");
         }
@@ -326,12 +591,15 @@ impl Editor {
 
     /// Crea una entidad delante de la cámara (o hija de la selección con `as_child`).
     pub fn create(&mut self, what: Create) -> EntityId {
+        if let Create::Ui(u) = what {
+            return self.crear_ui(u);
+        }
         let pos = (self.cam.pivot * 2.0).round() * 0.5;
         let name = what.label();
         let id = self.scene.spawn(name);
         let mut t = Transform::from_translation(Vec3::new(pos.x, pos.y.max(0.0), pos.z));
         match what {
-            Create::Empty => {}
+            Create::Ui(_) | Create::Empty => {}
             Create::Shape(s) => {
                 if s != PrimitiveShape::Plane {
                     t.translation.y = t.translation.y.max(0.5);
@@ -421,6 +689,8 @@ impl Editor {
         let snapshot = self.scene.to_file();
         let mut runtime = Runtime::start_en(&mut self.scene, self.lib.clone(), Some(&self.project.root));
         runtime.project_root = Some(self.project.root.clone());
+        runtime.ui.recursos = self.ui.recursos.clone();
+        self.modo_ui = false;
         self.play = Some(PlaySession { runtime, snapshot, selection: self.selection });
         self.game_focus = true;
         self.input.release_all();
@@ -693,12 +963,29 @@ impl Editor {
         let exe = out.join(if cfg!(windows) { format!("{name}.exe") } else { name.clone() });
         std::fs::copy(&player, &exe).map_err(|e| format!("copiando el reproductor: {e}"))?;
         std::fs::copy(self.project.root.join(maker_engine::project::PROJECT_FILE), out.join(maker_engine::project::PROJECT_FILE)).map_err(|e| e.to_string())?;
-        for dir in ["scenes", "assets"] {
+        for dir in ["scenes", "assets", ui::DIR_UI] {
             copy_dir(&self.project.root.join(dir), &out.join(dir))?;
         }
         // Solo lo que usan las escenas de la biblioteca integrada, junto al ejecutable.
         let scenes: Vec<_> = self.project.scenes().iter().filter_map(|s| Scene::load(&self.project.root.join(s)).ok()).map(|s| s.to_file()).collect();
-        let copied = maker_engine::biblioteca::export_used(&scenes, &out)?;
+        // Imágenes y fuentes de la interfaz: las de la biblioteca van con las demás;
+        // las del proyecto fuera de scenes/, assets/ y ui/ se copian una a una.
+        let usados = ui::recursos_usados(&scenes, &self.ui.recursos);
+        let (extra, propios): (std::collections::BTreeSet<String>, Vec<String>) = {
+            let (b, p): (Vec<String>, Vec<String>) = usados.into_iter().partition(|r| maker_engine::biblioteca::is_library_path(r));
+            (b.into_iter().collect(), p)
+        };
+        for r in propios {
+            let src = self.project.root.join(&r);
+            let dst = out.join(&r);
+            if src.is_file() && !dst.exists() {
+                if let Some(d) = dst.parent() {
+                    std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+                }
+                std::fs::copy(&src, &dst).map_err(|e| format!("{r}: {e}"))?;
+            }
+        }
+        let copied = maker_engine::biblioteca::export_used(&scenes, &extra, &out)?;
         if !copied.is_empty() {
             log::info("editor", format!("biblioteca: {} archivos copiados al juego", copied.len()));
         }
@@ -746,8 +1033,62 @@ fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> 
     Ok(())
 }
 
+/// Elementos de interfaz del menú Crear → Interfaz.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CrearUi {
+    Lienzo,
+    Widget(ui::TipoWidget),
+    Mascara,
+    Contenedor(ui::TipoContenedor),
+}
+
+impl CrearUi {
+    pub const MENU: [CrearUi; 14] = [
+        CrearUi::Lienzo,
+        CrearUi::Widget(ui::TipoWidget::Panel),
+        CrearUi::Widget(ui::TipoWidget::Imagen),
+        CrearUi::Widget(ui::TipoWidget::Texto),
+        CrearUi::Widget(ui::TipoWidget::Boton),
+        CrearUi::Widget(ui::TipoWidget::Barra),
+        CrearUi::Widget(ui::TipoWidget::Deslizador),
+        CrearUi::Widget(ui::TipoWidget::Casilla),
+        CrearUi::Widget(ui::TipoWidget::CampoTexto),
+        CrearUi::Mascara,
+        CrearUi::Contenedor(ui::TipoContenedor::Horizontal),
+        CrearUi::Contenedor(ui::TipoContenedor::Vertical),
+        CrearUi::Contenedor(ui::TipoContenedor::Rejilla),
+        CrearUi::Widget(ui::TipoWidget::Personalizado),
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            CrearUi::Lienzo => "Lienzo",
+            CrearUi::Widget(t) => t.nombre(),
+            CrearUi::Mascara => "Máscara",
+            CrearUi::Contenedor(ui::TipoContenedor::Horizontal) => "Caja horizontal",
+            CrearUi::Contenedor(ui::TipoContenedor::Vertical) => "Caja vertical",
+            CrearUi::Contenedor(ui::TipoContenedor::Rejilla) => "Rejilla",
+        }
+    }
+    pub fn componentes(self) -> (ui::RectUi, Option<ui::WidgetUi>, Option<ui::Contenedor>) {
+        match self {
+            CrearUi::Lienzo => (ui::RectUi::estirado(), None, None),
+            CrearUi::Widget(t) => {
+                let [w, h] = t.tam_inicial();
+                (ui::RectUi::centrado(w, h), Some(ui::WidgetUi::nuevo(t)), None)
+            }
+            CrearUi::Mascara => (ui::RectUi { recortar: true, ..ui::RectUi::centrado(400.0, 260.0) }, Some(ui::WidgetUi::nuevo(ui::TipoWidget::Panel)), None),
+            CrearUi::Contenedor(tipo) => {
+                let c = ui::Contenedor { tipo, ajustar: tipo != ui::TipoContenedor::Rejilla, ..Default::default() };
+                let [w, h] = if tipo == ui::TipoContenedor::Horizontal { [400.0, 80.0] } else { [280.0, 300.0] };
+                (ui::RectUi::centrado(w, h), None, Some(c))
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Create {
+    Ui(CrearUi),
     Empty,
     Shape(PrimitiveShape),
     PhysicsShape(PrimitiveShape),
@@ -759,6 +1100,7 @@ pub enum Create {
 impl Create {
     pub fn label(self) -> &'static str {
         match self {
+            Create::Ui(u) => u.label(),
             Create::Empty => "Entidad vacía",
             Create::Shape(s) | Create::PhysicsShape(s) => s.label(),
             Create::DirectionalLight => "Luz direccional",
@@ -776,20 +1118,27 @@ mod tests {
     fn undo_redo_roundtrip() {
         let mut s = Scene::starter();
         let mut u = Undo::default();
-        u.reset(&s);
+        u.reset_con(&s, BTreeMap::new());
         let a = s.spawn("A");
-        assert!(u.commit(&s, "crear A"));
-        assert!(!u.commit(&s, "sin cambios"));
+        assert!(u.commit_con(&s, BTreeMap::new(), "crear A"));
+        assert!(!u.commit_con(&s, BTreeMap::new(), "sin cambios"));
         s.set_name(a, "B");
-        assert!(u.commit(&s, "renombrar"));
+        assert!(u.commit_con(&s, BTreeMap::new(), "renombrar"));
         let (l, f) = u.undo().unwrap();
         assert_eq!(l, "renombrar");
-        let s2 = Scene::from_file(&f);
+        let s2 = Scene::from_file(&f.escena);
         assert_eq!(s2.name(a), "A");
         let (_, f) = u.undo().unwrap();
-        assert!(!Scene::from_file(&f).contains(a));
+        assert!(!Scene::from_file(&f.escena).contains(a));
         let (_, f) = u.redo().unwrap();
-        assert!(Scene::from_file(&f).contains(a));
+        assert!(Scene::from_file(&f.escena).contains(a));
+        // Los estilos de interfaz entran en el historial aunque la escena no cambie.
+        let mut docs = BTreeMap::new();
+        docs.insert("ui/estilos/a.mestilo".to_string(), "{}".to_string());
+        assert!(u.commit_con(&Scene::from_file(&f.escena), docs.clone(), "estilo"));
+        let (l, f) = u.undo().unwrap();
+        assert_eq!(l, "estilo");
+        assert!(f.ui.is_empty());
         assert!(u.can_redo());
     }
 }

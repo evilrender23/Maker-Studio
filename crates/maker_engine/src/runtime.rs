@@ -40,6 +40,8 @@ pub struct Runtime {
     pub ui: SistemaUi,
     /// Entrada que ven los scripts (sin lo que consumió la interfaz).
     entrada: Input,
+    /// Escala del tiempo del juego (la cambian los scripts; 0 = pausa).
+    pub time_scale: f32,
 }
 
 /// Estado que ven las funciones del host durante una llamada a un script.
@@ -48,6 +50,7 @@ struct HostCtx<'a> {
     physics: &'a mut Physics,
     input: &'a Input,
     ui: &'a mut SistemaUi,
+    time_scale: f32,
     destroyed: Vec<EntityId>,
     source: String,
 }
@@ -78,6 +81,7 @@ impl Runtime {
             project_root: raiz.map(std::path::Path::to_path_buf),
             ui,
             entrada: Input::default(),
+            time_scale: 1.0,
         };
         let mut slots: Vec<(EntityId, Scripts)> = {
             let mut q = scene.world.query::<(&EntityId, &Scripts)>();
@@ -124,13 +128,14 @@ impl Runtime {
         if self.paused {
             return;
         }
-        let dt = dt.clamp(0.0, 0.1);
+        let dt_real = dt.clamp(0.0, 0.1);
+        let dt = dt_real * self.time_scale;
         let lib = self.lib.clone();
         // La interfaz ve la entrada primero y se queda con lo que consume.
         self.ui.procesar_entrada(scene, input);
         let mut entrada = std::mem::take(&mut self.entrada);
         self.ui.filtrar(input, &mut entrada);
-        let mut ctx = HostCtx { scene, physics: &mut self.physics, input: &entrada, ui: &mut self.ui, destroyed: Vec::new(), source: String::new() };
+        let mut ctx = HostCtx { scene, physics: &mut self.physics, input: &entrada, ui: &mut self.ui, time_scale: self.time_scale, destroyed: Vec::new(), source: String::new() };
         let api = host_api(&mut ctx);
         // Todo acceso posterior pasa por el mismo puntero que ven los scripts.
         let ctx = unsafe { &mut *(api.ctx as *mut HostCtx) };
@@ -215,7 +220,8 @@ impl Runtime {
         // Animación después de los scripts (que pueden cambiar de clip).
         self.animation.update(ctx.scene, self.project_root.as_deref(), dt, |_| true);
         let pantalla = [input.pantalla.x, input.pantalla.y];
-        self.ui.actualizar(ctx.scene, pantalla, dt);
+        self.time_scale = ctx.time_scale;
+        self.ui.actualizar(ctx.scene, pantalla, dt_real);
         self.entrada = entrada;
         self.time += dt;
         self.frame += 1;
@@ -302,6 +308,7 @@ fn host_api(ctx: &mut HostCtx) -> HostApi {
         ui_set_size: h_ui_set_size,
         ui_pointer_over: h_ui_pointer_over,
         ui_set_theme: h_ui_set_theme,
+        set_time_scale: h_set_time_scale,
     }
 }
 
@@ -595,6 +602,9 @@ unsafe extern "C" fn h_ui_set_size(c: *mut c_void, e: Entity, s: maker_api::Vec2
 }
 unsafe extern "C" fn h_ui_pointer_over(c: *mut c_void) -> bool {
     unsafe { cx(c) }.ui.puntero_sobre_ui()
+}
+unsafe extern "C" fn h_set_time_scale(c: *mut c_void, s: f32) {
+    unsafe { cx(c) }.time_scale = if s.is_finite() { s.clamp(0.0, 100.0) } else { 1.0 };
 }
 unsafe extern "C" fn h_ui_set_theme(c: *mut c_void, p: *const u8, n: usize) {
     let c = unsafe { cx(c) };

@@ -22,11 +22,15 @@ pub enum Tipo {
     Escena,
     Modelo,
     Script,
+    Estilo,
+    Tema,
+    Plantilla,
+    Fuente,
     Otro,
 }
 
 impl Tipo {
-    const FILTROS: [Tipo; 4] = [Tipo::Escena, Tipo::Modelo, Tipo::Script, Tipo::Otro];
+    const FILTROS: [Tipo; 8] = [Tipo::Escena, Tipo::Modelo, Tipo::Script, Tipo::Estilo, Tipo::Tema, Tipo::Plantilla, Tipo::Fuente, Tipo::Otro];
 
     pub fn de(p: &Path) -> Tipo {
         if p.is_dir() {
@@ -36,6 +40,10 @@ impl Tipo {
             Some("mscene") => Tipo::Escena,
             Some("gltf" | "glb") => Tipo::Modelo,
             Some("rs") => Tipo::Script,
+            Some("mestilo") => Tipo::Estilo,
+            Some("mtema") => Tipo::Tema,
+            Some("mui") => Tipo::Plantilla,
+            Some("ttf" | "otf") => Tipo::Fuente,
             _ => Tipo::Otro,
         }
     }
@@ -46,6 +54,10 @@ impl Tipo {
             Tipo::Escena => "Escenas",
             Tipo::Modelo => "Modelos",
             Tipo::Script => "Scripts",
+            Tipo::Estilo => "Estilos",
+            Tipo::Tema => "Temas",
+            Tipo::Plantilla => "Plantillas de interfaz",
+            Tipo::Fuente => "Fuentes",
             Tipo::Otro => "Otros",
         }
     }
@@ -56,6 +68,10 @@ impl Tipo {
             Tipo::Escena => (Icon::Escena, theme::GREEN),
             Tipo::Modelo => (Icon::Modelo, theme::ACCENT),
             Tipo::Script => (Icon::Script, theme::ORANGE),
+            Tipo::Estilo => (Icon::Estilo, theme::PURPLE),
+            Tipo::Tema => (Icon::Tema, theme::PURPLE),
+            Tipo::Plantilla => (Icon::Plantilla, theme::GREEN),
+            Tipo::Fuente => (Icon::Fuente, theme::CYAN),
             Tipo::Otro => (Icon::Archivo, theme::TEXT3),
         }
     }
@@ -185,6 +201,9 @@ enum Accion {
     AbrirEscena(String),
     AbrirScript(PathBuf),
     AnadirModelo(String),
+    AbrirEstilo(String),
+    AbrirTema(String),
+    Instanciar(String),
 }
 
 pub fn show(ed: &mut Editor, ui: &mut Ui) {
@@ -242,7 +261,7 @@ pub fn show(ed: &mut Editor, ui: &mut Ui) {
                     let rel = relativa(&raiz, p);
                     let seleccionado = c.seleccion.as_deref() == Some(p.as_path()) || (tipo == Tipo::Escena && *p == escena_actual);
                     let tex = if tipo == Tipo::Modelo { c.mini(renderer, &raiz, &ctx, p, &mut puede_render) } else { None };
-                    let sentido = if tipo == Tipo::Modelo { egui::Sense::click_and_drag() } else { egui::Sense::click() };
+                    let sentido = if matches!(tipo, Tipo::Modelo | Tipo::Plantilla) { egui::Sense::click_and_drag() } else { egui::Sense::click() };
                     let (rect, resp) = ui.allocate_exact_size(egui::vec2(CELDA - 4.0, CELDA), sentido);
                     let pt = ui.painter_at(rect);
                     let fondo = if seleccionado {
@@ -278,7 +297,10 @@ pub fn show(ed: &mut Editor, ui: &mut Ui) {
                             Tipo::Carpeta => Accion::Entrar(rel.clone()),
                             Tipo::Escena => Accion::AbrirEscena(rel.clone()),
                             Tipo::Modelo => Accion::AnadirModelo(rel.clone()),
-                            Tipo::Script | Tipo::Otro => Accion::AbrirScript(p.clone()),
+                            Tipo::Estilo => Accion::AbrirEstilo(rel.clone()),
+                            Tipo::Tema => Accion::AbrirTema(p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()),
+                            Tipo::Plantilla => Accion::Instanciar(rel.clone()),
+                            Tipo::Script | Tipo::Fuente | Tipo::Otro => Accion::AbrirScript(p.clone()),
                         });
                     }
                     resp.on_hover_text(rel);
@@ -310,6 +332,17 @@ pub fn show(ed: &mut Editor, ui: &mut Ui) {
         }
         Some(Accion::AnadirModelo(m)) => {
             ed.add_model(&m);
+        }
+        Some(Accion::AbrirEstilo(r)) => {
+            ed.estilos.abrir_hoja(&ed.ui.recursos, &r);
+            ed.bottom_tab = crate::editor::BottomTab::Estilos;
+        }
+        Some(Accion::AbrirTema(t)) => {
+            ed.estilos.abrir_tema(&t);
+            ed.bottom_tab = crate::editor::BottomTab::Estilos;
+        }
+        Some(Accion::Instanciar(r)) => {
+            ed.instanciar_plantilla(&r, None);
         }
         None => {}
     }

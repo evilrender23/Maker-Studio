@@ -624,6 +624,42 @@ pub struct InstanciaUi {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OrigenPlantilla(pub u64);
 
+/// Imágenes y fuentes que usa la interfaz de unas escenas (widgets, retoques
+/// locales y todos los estilos del proyecto), para exportarlas.
+pub fn recursos_usados(escenas: &[crate::scene::SceneFile], r: &RecursosUi) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    let de_estilo = |e: &Estilo, out: &mut std::collections::BTreeSet<String>| {
+        for capa in std::iter::once(&e.estados).chain(e.partes.values()) {
+            for st in Estado::TODOS {
+                let p = capa.de(st);
+                for v in [&p.imagen, &p.fuente].into_iter().flatten() {
+                    if !v.is_empty() {
+                        out.insert(v.clone());
+                    }
+                }
+            }
+        }
+    };
+    for f in escenas {
+        for rec in &f.entities {
+            if let Some(w) = &rec.widget {
+                if let ClaseWidget::Imagen(im) = &w.clase
+                    && !im.imagen.is_empty()
+                {
+                    out.insert(im.imagen.clone());
+                }
+                de_estilo(&w.local, &mut out);
+            }
+        }
+    }
+    for h in r.hojas.values() {
+        for e in h.estilos.values() {
+            de_estilo(e, &mut out);
+        }
+    }
+    out
+}
+
 /// Ruta de las carpetas de interfaz dentro del proyecto.
 pub const DIR_UI: &str = "ui";
 pub const EXT_ESTILO: &str = "mestilo";

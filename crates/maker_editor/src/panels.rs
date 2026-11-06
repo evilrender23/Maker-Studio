@@ -1,6 +1,7 @@
 //! Paneles del editor: Jerarquía, Inspector, Contenido, Consola y Script.
 
-use crate::editor::{BottomTab, Create, Editor};
+use crate::editor::{BottomTab, Create, CrearUi, Editor};
+use maker_engine::ui;
 use crate::theme::{self, section_label};
 use crate::viewport::AssetDrag;
 use egui::{Color32, RichText, Ui};
@@ -23,6 +24,7 @@ enum HAction {
     Focus(EntityId),
     /// Modelo soltado desde Contenido o la Biblioteca (como hijo de una entidad).
     AddModel(String, Option<EntityId>),
+    SaveTemplate(EntityId),
 }
 
 pub fn create_menu(ui: &mut Ui) -> Option<Create> {
@@ -55,7 +57,44 @@ pub fn create_menu(ui: &mut Ui) -> Option<Create> {
     if ui.button("Cámara").clicked() {
         out = Some(Create::Camera);
     }
+    ui.menu_button("Interfaz", |ui| {
+        for c in CrearUi::MENU {
+            let img = crate::icons::image(ui.ctx(), icono_crear_ui(c), theme::GREEN);
+            if ui.add(egui::Button::new((img, c.label()))).clicked() {
+                out = Some(Create::Ui(c));
+            }
+            if c == CrearUi::Lienzo || c == CrearUi::Mascara {
+                ui.separator();
+            }
+        }
+    });
     out
+}
+
+fn icono_crear_ui(c: CrearUi) -> crate::icons::Icon {
+    use crate::icons::Icon;
+    match c {
+        CrearUi::Lienzo => Icon::Lienzo,
+        CrearUi::Widget(t) => icono_widget(t),
+        CrearUi::Mascara => Icon::Mascara,
+        CrearUi::Contenedor(_) => Icon::Contenedor,
+    }
+}
+
+pub fn icono_widget(t: ui::TipoWidget) -> crate::icons::Icon {
+    use crate::icons::Icon;
+    use ui::TipoWidget as T;
+    match t {
+        T::Panel => Icon::PanelUi,
+        T::Imagen => Icon::Imagen,
+        T::Texto => Icon::Texto,
+        T::Boton => Icon::Boton,
+        T::Barra => Icon::Barra,
+        T::Deslizador => Icon::Deslizador,
+        T::Casilla => Icon::Casilla,
+        T::CampoTexto => Icon::Campo,
+        T::Personalizado => Icon::Personalizado,
+    }
 }
 
 /// Icono pixel art y color de cada entidad: cámara, luz (sol o bombilla), la forma de su malla
@@ -70,6 +109,20 @@ fn icon_for(ed: &Editor, id: EntityId) -> (crate::icons::Icon, Color32) {
     }
     if ed.scene.has::<Animator>(id) {
         return (Icon::Personaje, theme::PURPLE);
+    }
+    if ed.scene.has::<ui::Lienzo>(id) {
+        return (Icon::Lienzo, theme::GREEN);
+    }
+    if let Some(r) = ed.scene.get::<ui::RectUi>(id) {
+        let icono = match ed.scene.get::<ui::WidgetUi>(id) {
+            _ if ed.scene.has::<ui::InstanciaUi>(id) => Icon::Plantilla,
+            Some(w) if r.recortar && w.clase.tipo() == ui::TipoWidget::Panel => Icon::Mascara,
+            Some(w) => icono_widget(w.clase.tipo()),
+            None if ed.scene.has::<ui::Contenedor>(id) => Icon::Contenedor,
+            None if r.recortar => Icon::Mascara,
+            None => Icon::Vacio,
+        };
+        return (icono, theme::GREEN);
     }
     let Some(m) = ed.scene.get::<MeshRenderer>(id) else { return (Icon::Vacio, theme::TEXT3) };
     let icon = match &m.mesh {
@@ -189,6 +242,10 @@ fn apply(ed: &mut Editor, a: HAction) {
             ed.selection = Some(id);
             ed.focus_selected();
         }
+        HAction::AddModel(path, parent) if path.ends_with(&format!(".{}", ui::EXT_PLANTILLA)) => {
+            ed.instanciar_plantilla(&path, parent);
+        }
+        HAction::SaveTemplate(id) => ed.guardar_como_plantilla(id),
         HAction::AddModel(path, parent) => {
             let id = ed.add_model(&path);
             if let Some(p) = parent {
@@ -364,6 +421,9 @@ fn row(ed: &mut Editor, ui: &mut Ui, id: EntityId, g: &Guias, actions: &mut Vec<
         if ed.scene.parent(id).is_some() && ui.button("Sacar a la raíz").clicked() {
             actions.push(HAction::Reparent(id, None));
         }
+        if ed.scene.has::<ui::RectUi>(id) && ui.button("Guardar como plantilla").clicked() {
+            actions.push(HAction::SaveTemplate(id));
+        }
         ui.separator();
         if ui.button(RichText::new("Eliminar  (Supr)").color(theme::RED)).clicked() {
             actions.push(HAction::Delete(id));
@@ -463,8 +523,9 @@ pub fn inspector(ed: &mut Editor, ui: &mut Ui) {
         ui.label(RichText::new(format!("id {}", id.0)).small().color(theme::TEXT4));
         ui.add_space(4.0);
 
-        // Transform.
-        let (open, _) = component_header(ui, "Transform", "insp-transform", false);
+        // Transform (los elementos de interfaz usan su Rect UI).
+        let es_ui = ed.scene.has::<ui::RectUi>(id) || ed.scene.has::<ui::Lienzo>(id);
+        let (open, _) = if es_ui { (false, false) } else { component_header(ui, "Transform", "insp-transform", false) };
         if open {
             let mut t = ed.scene.transform(id);
             let euler = match ed.euler_cache {
@@ -515,8 +576,11 @@ pub fn inspector(ed: &mut Editor, ui: &mut Ui) {
                 }
             });
         }
-        ui.separator();
+        if !es_ui {
+            ui.separator();
+        }
 
+        crate::ui_inspector::secciones(ed, ui, id);
         mesh_renderer(ed, ui, id);
         light(ed, ui, id);
         camera(ed, ui, id);
@@ -570,6 +634,12 @@ fn add_component_menu(ed: &mut Editor, ui: &mut Ui, id: EntityId) {
         s.insert(id, Collider::new(ColliderShape::fit(shape)));
         added = Some("Colisionador");
     }
+    ui.separator();
+    ui.menu_button("Interfaz", |ui| {
+        if let Some(a) = crate::ui_inspector::anadir(ed, ui, id) {
+            added = Some(a);
+        }
+    });
     ui.separator();
     let names = ed.script_names();
     if names.is_empty() {
@@ -1071,7 +1141,7 @@ fn environment(ed: &mut Editor, ui: &mut Ui) {
 
 // ───────────────────────────── Panel inferior ─────────────────────────────
 
-pub fn bottom(ed: &mut Editor, ui: &mut Ui) {
+pub fn bottom(ed: &mut Editor, ui: &mut Ui, rs: &egui_wgpu::RenderState) {
     let new_logs = log::len().saturating_sub(ed.console_seen);
     let errors = log::since(0).iter().filter(|e| e.level == log::Level::Error).count();
     ui.horizontal(|ui| {
@@ -1087,6 +1157,7 @@ pub fn bottom(ed: &mut Editor, ui: &mut Ui) {
             _ => "Script".to_string(),
         };
         ui.selectable_value(&mut ed.bottom_tab, BottomTab::Script, script_label);
+        ui.selectable_value(&mut ed.bottom_tab, BottomTab::Estilos, "Estilos");
     });
     ui.separator();
     match ed.bottom_tab {
@@ -1094,6 +1165,7 @@ pub fn bottom(ed: &mut Editor, ui: &mut Ui) {
         BottomTab::Library => crate::biblioteca_ui::show(ed, ui),
         BottomTab::Console => console(ed, ui),
         BottomTab::Script => script_editor(ed, ui),
+        BottomTab::Estilos => crate::estilos_ui::show(ed, ui, rs),
     }
 }
 

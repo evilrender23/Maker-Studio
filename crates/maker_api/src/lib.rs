@@ -391,6 +391,8 @@ pub struct HostApi {
     pub ui_set_size: unsafe extern "C" fn(*mut c_void, Entity, Vec2),
     pub ui_pointer_over: unsafe extern "C" fn(*mut c_void) -> bool,
     pub ui_set_theme: unsafe extern "C" fn(*mut c_void, *const u8, usize),
+    /// Escala del tiempo del juego (0 = pausa; la interfaz sigue respondiendo).
+    pub set_time_scale: unsafe extern "C" fn(*mut c_void, f32),
 }
 
 /// Tipos de propiedad exportada (como `[SerializeField]` / `@export`).
@@ -728,6 +730,11 @@ impl<'a> Ctx<'a> {
     /// Cambia el tema del proyecto (nombre del `.mtema`): reestiliza toda la interfaz.
     pub fn ui_set_theme(&mut self, theme: &str) {
         unsafe { (self.api.ui_set_theme)(self.api.ctx, theme.as_ptr(), theme.len()) }
+    }
+    /// Escala del tiempo del juego: 0 pausa la física, la animación y el `dt`
+    /// de los scripts; la interfaz sigue funcionando.
+    pub fn set_time_scale(&mut self, scale: f32) {
+        unsafe { (self.api.set_time_scale)(self.api.ctx, scale) }
     }
     /// Sustituye lo que dibuja el widget personalizado `e`. Lo dibujado se
     /// mantiene hasta la siguiente llamada.

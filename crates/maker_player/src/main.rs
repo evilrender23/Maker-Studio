@@ -4,7 +4,7 @@
 use egui::{Color32, Pos2, Rect};
 use maker_api::Key;
 use maker_engine::{Input, Project, Runtime, Scene, ScriptLib, log};
-use maker_render::{RenderOptions, RenderView, SceneRenderer};
+use maker_render::{RenderOptions, RenderView, SceneRenderer, UiRenderer};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,6 +15,7 @@ struct Player {
     scene: Scene,
     runtime: Runtime,
     renderer: SceneRenderer,
+    ui: UiRenderer,
     input: Input,
     tex: Option<egui::TextureId>,
     tex_gen: u64,
@@ -81,6 +82,7 @@ impl eframe::App for Player {
                         }
                     }
                     egui::Event::MouseMoved(d) => self.input.mouse_delta += glam::Vec2::new(d.x, d.y),
+                    egui::Event::Text(t) => self.input.texto.push_str(t),
                     _ => {}
                 }
             }
@@ -92,6 +94,13 @@ impl eframe::App for Player {
                 i.pointer.button_down(egui::PointerButton::Secondary),
                 i.pointer.button_down(egui::PointerButton::Middle),
             ];
+            // La interfaz trabaja en píxeles físicos de la vista.
+            let ppp = i.pixels_per_point;
+            let r = i.content_rect();
+            self.input.pantalla = glam::Vec2::new((r.width() * ppp).round(), (r.height() * ppp).round());
+            if let Some(p) = i.pointer.hover_pos() {
+                self.input.mouse_pos = glam::Vec2::new((p.x - r.min.x) * ppp, (p.y - r.min.y) * ppp);
+            }
         });
         for k in &self.hold {
             self.input.set_key(*k, true);
@@ -116,6 +125,10 @@ impl eframe::App for Player {
                 }
             };
             self.renderer.render(&self.scene, &view, &RenderOptions { shadows: true, ..Default::default() });
+            // Interfaz encima de la imagen final.
+            if let Some(v) = self.renderer.output_view() {
+                self.ui.dibujar(&mut self.runtime.ui, v, self.renderer.output_size(), None);
+            }
             if let Some(v) = self.renderer.output_view() {
                 let mut r = self.rs.renderer.write();
                 match self.tex {
@@ -222,6 +235,7 @@ fn main() -> eframe::Result<()> {
         Box::new(move |cc| {
             let rs = cc.wgpu_render_state.clone().expect("wgpu");
             let mut renderer = SceneRenderer::new(&rs.device, &rs.queue);
+            let ui = UiRenderer::new(&rs.device, &rs.queue, maker_render::COLOR_FORMAT);
             renderer.project_root = Some(project.root.clone());
             let mut runtime = Runtime::start_en(&mut scene, lib, Some(&project.root));
             runtime.project_root = Some(project.root.clone());
@@ -230,6 +244,7 @@ fn main() -> eframe::Result<()> {
                 scene,
                 runtime,
                 renderer,
+                ui,
                 input: Input::default(),
                 tex: None,
                 tex_gen: 0,

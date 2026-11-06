@@ -307,7 +307,7 @@ impl eframe::App for MakerApp {
             egui::Panel::right("agente").frame(theme::sidebar_frame()).resizable(true).default_size(400.0).min_size(320.0).max_size(760.0).show(ui, |ui| crate::agente::panel::mostrar(g, ed, &self.prefs, ui));
         }
         egui::Panel::right("inspector").frame(theme::sidebar_frame()).resizable(true).default_size(330.0).min_size(240.0).show(ui, |ui| panels::inspector(ed, ui));
-        egui::Panel::bottom("bottom").frame(theme::sidebar_frame()).resizable(true).default_size(240.0).min_size(110.0).show(ui, |ui| panels::bottom(ed, ui));
+        egui::Panel::bottom("bottom").frame(theme::sidebar_frame()).resizable(true).default_size(240.0).min_size(110.0).show(ui, |ui| panels::bottom(ed, ui, &self.rs));
         egui::CentralPanel::no_frame().show(ui, |ui| {
             egui::Frame::new().fill(theme::CHROME).inner_margin(egui::Margin::symmetric(6, 4)).show(ui, |ui| {
                 crate::viewport::show(ed, ui, &self.rs);

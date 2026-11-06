@@ -21,6 +21,7 @@ Estado de la versión 0.1 frente a lo que ofrecen Unity, Unreal y Godot.
 | Física: juntas, controlador de personaje, mallas como colisionador | ❌ | |
 | PBR + sol con sombras + luces puntuales | ✅ | |
 | Texturas y materiales como asset | ❌ | color/metal/rugosidad por entidad; falta albedo/normal map |
+| Modo Texturizado (pintar PBR sobre assets) | ⚠️ | estudio y motor integrado; interfaz pendiente, ver [TEXTURIZADO.md](TEXTURIZADO.md) |
 | Sombras de luces puntuales, cascadas (CSM) | ❌ | un mapa de 2048² centrado en la cámara |
 | Post-proceso (bloom, SSAO, TAA) | ❌ | |
 | Instancing por GPU | ❌ | hoy un draw call por objeto con uniform dinámico |

@@ -1,0 +1,11 @@
+[package]
+name = "maker_textura"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+texturecraft-engine = { git = "https://github.com/storytold/texturecraft", rev = "e01dac2" }
+texturecraft-render = { git = "https://github.com/storytold/texturecraft", rev = "e01dac2" }
+serde_json.workspace = true

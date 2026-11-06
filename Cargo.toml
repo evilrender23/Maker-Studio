@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/maker_api", "crates/maker_engine", "crates/maker_render", "crates/maker_editor", "crates/maker_player"]
+members = ["crates/maker_api", "crates/maker_engine", "crates/maker_render", "crates/maker_editor", "crates/maker_player", "crates/maker_textura"]
 
 [workspace.package]
 version = "0.1.0"

@@ -31,13 +31,10 @@ pub enum Icon {
     Biblioteca,
     Ojo,
     OjoCerrado,
-    // Para la pestaña Contenido con miniaturas (en curso).
-    #[allow(dead_code)]
     Escena,
-    #[allow(dead_code)]
     Script,
-    #[allow(dead_code)]
     Archivo,
+    Carpeta,
 }
 
 impl Icon {
@@ -66,6 +63,7 @@ impl Icon {
             Icon::Escena => &px::ESCENA,
             Icon::Script => &px::SCRIPT,
             Icon::Archivo => &px::ARCHIVO,
+            Icon::Carpeta => &px::CARPETA,
         }
     }
 }

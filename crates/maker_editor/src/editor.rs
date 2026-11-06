@@ -157,6 +157,7 @@ pub struct Editor {
     pub pending_save_script: bool,
     /// Navegador de la biblioteca integrada.
     pub biblioteca: crate::biblioteca_ui::BibliotecaUi,
+    pub contenido: crate::contenido_ui::ContenidoUi,
     /// Animación en modo edición (vista previa del Animator seleccionado).
     pub animation: maker_engine::animation::Animation,
 }
@@ -215,6 +216,7 @@ impl Editor {
             pending_edit: None,
             pending_save_script: false,
             biblioteca: Default::default(),
+            contenido: Default::default(),
             animation: Default::default(),
         };
         ed.undo.reset(&ed.scene);

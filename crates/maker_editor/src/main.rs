@@ -6,6 +6,7 @@ mod app;
 mod biblioteca_ui;
 mod camera;
 mod code;
+mod contenido_ui;
 mod editor;
 mod gizmo;
 mod hub;

@@ -1071,105 +1071,15 @@ pub fn bottom(ed: &mut Editor, ui: &mut Ui) {
     });
     ui.separator();
     match ed.bottom_tab {
-        BottomTab::Content => content(ed, ui),
+        BottomTab::Content => crate::contenido_ui::show(ed, ui),
         BottomTab::Library => crate::biblioteca_ui::show(ed, ui),
         BottomTab::Console => console(ed, ui),
         BottomTab::Script => script_editor(ed, ui),
     }
 }
 
-fn content(ed: &mut Editor, ui: &mut Ui) {
-    ui.horizontal(|ui| {
-        ui.menu_button("Nueva escena", |ui| {
-            ui.label("Nombre:");
-            let r = ui.text_edit_singleline(&mut ed.new_script_name);
-            if (ui.button("Crear").clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))) && !ed.new_script_name.trim().is_empty() {
-                let n = std::mem::take(&mut ed.new_script_name);
-                ed.new_scene(&n);
-                ui.close();
-            }
-        });
-        ui.menu_button("Nuevo script", |ui| {
-            ui.label("Nombre del tipo (PascalCase):");
-            let r = ui.text_edit_singleline(&mut ed.new_script_name);
-            if (ui.button("Crear").clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))) && !ed.new_script_name.trim().is_empty() {
-                let n = std::mem::take(&mut ed.new_script_name);
-                ed.create_script(&n);
-                ui.close();
-            }
-        });
-        ui.menu_button("Importar modelo", |ui| {
-            ui.label("Ruta de un .gltf / .glb:");
-            ui.add(egui::TextEdit::singleline(&mut ed.import_path).desired_width(320.0));
-            if ui.button("Importar").clicked() {
-                import_model(ed);
-                ui.close();
-            }
-        });
-        if ui.button("Abrir carpeta").clicked() {
-            let _ = std::process::Command::new(if cfg!(windows) { "explorer" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" }).arg(&ed.project.root).spawn();
-        }
-    });
-    ui.add_space(4.0);
-    let mut scenes = Vec::new();
-    let mut models = Vec::new();
-    let mut scripts = Vec::new();
-    let mut other = Vec::new();
-    maker_engine::project::walk(&ed.project.root, &mut |p| {
-        let rel = ed.project.relative(p);
-        match p.extension().and_then(|e| e.to_str()) {
-            Some("mscene") => scenes.push(rel),
-            Some("gltf") | Some("glb") => models.push(rel),
-            Some("rs") => scripts.push(rel),
-            _ => other.push(rel),
-        }
-    });
-    let current = ed.project.relative(&ed.scene_path);
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        ui.columns(3, |cols| {
-            section_label(&mut cols[0], "Escenas");
-            for s in &scenes {
-                let r = cols[0].selectable_label(*s == current, format!("▤ {s}"));
-                if r.double_clicked() && *s != current {
-                    if ed.dirty {
-                        ed.save_scene();
-                    }
-                    ed.open_scene(s);
-                }
-                r.on_hover_text("Doble clic para abrir (guarda la actual)");
-            }
-            section_label(&mut cols[1], "Modelos");
-            for m in &models {
-                let r = cols[1].add(egui::Button::new(format!("◈ {m}")).frame(false).sense(egui::Sense::click_and_drag()));
-                if r.drag_started() {
-                    egui::DragAndDrop::set_payload(&r.ctx, AssetDrag(m.clone()));
-                }
-                if r.double_clicked() {
-                    ed.add_model(m);
-                }
-                r.on_hover_text("Arrastra al viewport o doble clic para añadir");
-            }
-            section_label(&mut cols[2], "Scripts");
-            for s in &scripts {
-                if cols[2].add(egui::Button::new(format!("ƒ {s}")).frame(false)).clicked() {
-                    ed.open_script(ed.project.root.join(s));
-                }
-            }
-            if let Some(l) = &ed.lib {
-                cols[2].label(RichText::new(format!("Compilados: {}", l.names().join(", "))).small().color(theme::GREEN));
-            }
-        });
-        if !other.is_empty() {
-            ui.add_space(6.0);
-            section_label(ui, "Otros archivos");
-            for o in other.iter().take(50) {
-                ui.label(RichText::new(o).small().color(theme::TEXT3));
-            }
-        }
-    });
-}
 
-fn import_model(ed: &mut Editor) {
+pub fn import_model(ed: &mut Editor) {
     let raw = ed.import_path.trim().trim_matches(['"', '\'']).trim_start_matches("file://").to_string();
     let src = if let Some(rest) = raw.strip_prefix("~/") { std::env::var("HOME").map(|h| format!("{h}/{rest}")).unwrap_or(raw.clone()) } else { raw.clone() };
     let src = std::path::PathBuf::from(src);

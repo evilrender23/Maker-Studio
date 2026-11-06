@@ -1,0 +1,26 @@
+[package]
+name = "maker_editor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "maker-studio"
+path = "src/main.rs"
+
+[dependencies]
+maker_api.workspace = true
+maker_engine.workspace = true
+maker_render.workspace = true
+glam.workspace = true
+hecs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+eframe.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
+wgpu.workspace = true
+log.workspace = true
+env_logger.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }

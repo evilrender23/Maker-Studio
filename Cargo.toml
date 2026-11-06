@@ -1,0 +1,42 @@
+[workspace]
+resolver = "3"
+members = ["crates/maker_api", "crates/maker_engine", "crates/maker_render", "crates/maker_editor", "crates/maker_player"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["EvilRender23"]
+repository = "https://github.com/EvilRender23/Maker-Studio"
+
+[workspace.dependencies]
+maker_api = { path = "crates/maker_api" }
+maker_engine = { path = "crates/maker_engine" }
+maker_render = { path = "crates/maker_render" }
+glam = { version = "0.33", features = ["serde", "bytemuck"] }
+hecs = "0.11"
+rapier3d = "0.36"
+gltf = { version = "1.4", default-features = false, features = ["import", "utils"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+libloading = "0.8"
+bytemuck = { version = "1", features = ["derive"] }
+wgpu = "30"
+eframe = { version = "0.37", default-features = false, features = ["wgpu", "default_fonts", "wayland", "x11"] }
+egui = "0.37"
+egui-wgpu = "0.37"
+log = "0.4"
+env_logger = "0.11"
+pollster = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+panic = "unwind"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

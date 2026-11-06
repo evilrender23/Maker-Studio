@@ -38,8 +38,10 @@ pub struct Tarea {
 
 pub struct Importador {
     pub tarea: Option<Tarea>,
-    /// Texto del campo «Desde ruta».
-    pub ruta: String,
+    /// Carpeta de origen de la última importación (el selector vuelve a abrirse ahí).
+    pub ultima_carpeta: Option<PathBuf>,
+    /// Hay un selector abierto (para no abrir dos).
+    pub selector_abierto: Arc<std::sync::atomic::AtomicBool>,
     /// Lo elegido en el selector nativo, con la carpeta de destino de cuando se abrió.
     pub elegidos: (Sender<Vec<PathBuf>>, Receiver<Vec<PathBuf>>),
     pub destino_elegidos: PathBuf,
@@ -49,7 +51,7 @@ pub struct Importador {
 
 impl Default for Importador {
     fn default() -> Self {
-        Self { tarea: None, ruta: String::new(), elegidos: channel(), destino_elegidos: PathBuf::new(), rect_contenido: egui::Rect::NOTHING }
+        Self { tarea: None, ultima_carpeta: None, selector_abierto: Default::default(), elegidos: channel(), destino_elegidos: PathBuf::new(), rect_contenido: egui::Rect::NOTHING }
     }
 }
 
@@ -64,6 +66,9 @@ fn es_modelo(p: &Path) -> bool {
 pub fn tick(ed: &mut crate::editor::Editor, ctx: &egui::Context) {
     let raiz = ed.project.root.clone();
     while let Ok(v) = ed.importador.elegidos.1.try_recv() {
+        if let Some(p) = v.first() {
+            ed.importador.ultima_carpeta = if p.is_dir() { p.parent().map(Path::to_path_buf) } else { p.parent().map(Path::to_path_buf) };
+        }
         let d = std::mem::take(&mut ed.importador.destino_elegidos);
         ed.importador.empezar(v, if d.as_os_str().is_empty() { raiz.clone() } else { d }, false, ctx.clone());
     }
@@ -112,42 +117,21 @@ pub fn tick(ed: &mut crate::editor::Editor, ctx: &egui::Context) {
     }
 }
 
-/// Menú «Importar»: archivos, carpetas o una ruta escrita, hacia `destino`.
-pub fn menu(ed: &mut crate::editor::Editor, ui: &mut egui::Ui, destino: PathBuf) {
+/// Botones «Importar…» (archivos) e «Importar carpeta…»: abren directamente el selector del
+/// sistema; lo elegido va a `destino`.
+pub fn botones(ed: &mut crate::editor::Editor, ui: &mut egui::Ui, destino: PathBuf) {
     let imp = &mut ed.importador;
-    let titulo = match &imp.tarea {
-        Some(t) => format!("Importando {}/{}", t.hechos.load(Ordering::Relaxed), t.total),
-        None => "Importar".into(),
-    };
-    ui.add_enabled_ui(imp.tarea.is_none(), |ui| {
-        ui.menu_button(titulo, |ui| {
-            if ui.button("Archivos…").on_hover_text("Uno o varios archivos").clicked() {
-                imp.destino_elegidos = destino.clone();
-                elegir(false, destino.clone(), imp.elegidos.0.clone(), ui.ctx().clone());
-                ui.close();
-            }
-            if ui.button("Carpetas…").on_hover_text("Carpetas enteras, con su estructura").clicked() {
-                imp.destino_elegidos = destino.clone();
-                elegir(true, destino.clone(), imp.elegidos.0.clone(), ui.ctx().clone());
-                ui.close();
-            }
-            ui.separator();
-            ui.horizontal(|ui| {
-                let r = ui.add(egui::TextEdit::singleline(&mut imp.ruta).hint_text("Ruta de un archivo o carpeta").desired_width(260.0));
-                let ok = ruta_escrita(&imp.ruta);
-                let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if (ui.add_enabled(ok.is_some(), egui::Button::new("Importar")).clicked() || enter)
-                    && let Some(p) = ok
-                {
-                    imp.ruta.clear();
-                    imp.empezar(vec![p], destino.clone(), false, ui.ctx().clone());
-                    ui.close();
-                }
-            });
-        })
-        .response
-        .on_hover_text("También puedes soltar archivos y carpetas sobre Contenido o el visor");
-    });
+    if let Some(t) = &imp.tarea {
+        ui.add(egui::Spinner::new());
+        ui.label(format!("Importando {}/{}", t.hechos.load(Ordering::Relaxed), t.total));
+        return;
+    }
+    if ui.button("Importar…").on_hover_text("Elegir archivos (también se pueden soltar aquí) · Ctrl+I").clicked() {
+        imp.abrir(false, destino.clone(), ui.ctx());
+    }
+    if ui.button("Importar carpeta…").on_hover_text("Carpetas enteras, con su estructura").clicked() {
+        imp.abrir(true, destino, ui.ctx());
+    }
 }
 
 fn oculto(p: &Path) -> bool {
@@ -268,6 +252,15 @@ pub fn planificar(fuentes: &[PathBuf], destino: &Path) -> (Vec<Copia>, Vec<PathB
 }
 
 impl Importador {
+    /// Abre el selector nativo (archivos o carpetas) para importar en `destino`.
+    pub fn abrir(&mut self, carpetas: bool, destino: PathBuf, ctx: &egui::Context) {
+        if self.ocupado() || self.selector_abierto.load(Ordering::Relaxed) {
+            return;
+        }
+        self.destino_elegidos = destino;
+        elegir(carpetas, self.ultima_carpeta.clone(), self.elegidos.0.clone(), self.selector_abierto.clone(), ctx.clone());
+    }
+
     pub fn ocupado(&self) -> bool {
         self.tarea.is_some()
     }
@@ -317,31 +310,32 @@ impl Importador {
     }
 }
 
+/// Extensiones que el editor entiende (filtro por defecto del selector).
+const COMPATIBLES: [&str; 22] = ["glb", "gltf", "bin", "png", "jpg", "jpeg", "webp", "bmp", "gif", "tga", "ttf", "otf", "wgsl", "mscene", "mestilo", "mtema", "mui", "rs", "ogg", "wav", "mp3", "flac"];
+
 /// Selector nativo de archivos o carpetas (varios), en otro hilo.
-pub fn elegir(carpetas: bool, desde: PathBuf, tx: Sender<Vec<PathBuf>>, ctx: egui::Context) {
+pub fn elegir(carpetas: bool, desde: Option<PathBuf>, tx: Sender<Vec<PathBuf>>, abierto: Arc<std::sync::atomic::AtomicBool>, ctx: egui::Context) {
+    abierto.store(true, Ordering::Relaxed);
     std::thread::spawn(move || {
-        let d = rfd::FileDialog::new().set_directory(desde);
+        let mut d = rfd::FileDialog::new();
+        if let Some(desde) = desde.filter(|p| p.is_dir()) {
+            d = d.set_directory(desde);
+        }
         let v = if carpetas {
             d.set_title("Importar carpetas").pick_folders()
         } else {
-            d.set_title("Importar archivos").add_filter("Todos los archivos", &["*"]).add_filter("Modelos", &["glb", "gltf"]).add_filter("Imágenes", &["png", "jpg", "jpeg", "webp", "bmp", "gif", "tga"]).add_filter("Fuentes", &["ttf", "otf"]).pick_files()
+            d.set_title("Importar archivos")
+                .add_filter("Assets compatibles", &COMPATIBLES)
+                .add_filter("Modelos", &["glb", "gltf"])
+                .add_filter("Imágenes", &["png", "jpg", "jpeg", "webp", "bmp", "gif", "tga"])
+                .add_filter("Fuentes", &["ttf", "otf"])
+                .add_filter("Todos los archivos", &["*"])
+                .pick_files()
         };
+        abierto.store(false, Ordering::Relaxed);
         let _ = tx.send(v.unwrap_or_default());
         ctx.request_repaint();
     });
-}
-
-/// Ruta escrita a mano: comillas, `file://` y `~/`.
-pub fn ruta_escrita(s: &str) -> Option<PathBuf> {
-    let raw = s.trim().trim_matches(['"', '\'']).trim_start_matches("file://");
-    if raw.is_empty() {
-        return None;
-    }
-    let p = match raw.strip_prefix("~/") {
-        Some(rest) => PathBuf::from(std::env::var("HOME").ok()?).join(rest),
-        None => PathBuf::from(decodificar(raw)),
-    };
-    p.exists().then_some(p)
 }
 
 #[cfg(test)]

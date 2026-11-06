@@ -526,6 +526,10 @@ fn shortcuts(ed: &mut Editor, ctx: &egui::Context) {
         if i.consume_key(M::NONE, K::F7) {
             ed.build_scripts();
         }
+        if !game && i.consume_shortcut(&S::new(M::COMMAND, K::I)) {
+            let d = ed.project.root.join(ed.contenido.carpeta());
+            ed.importador.abrir(false, d, &ctx.clone());
+        }
         // Esc suelta el ratón capturado sin parar el juego (el siguiente Esc es del juego).
         if ed.cursor.capturado() && (i.consume_key(M::NONE, K::Escape) || i.consume_shortcut(&S::new(M::SHIFT, K::F1))) {
             ed.cursor.soltar();
@@ -565,6 +569,16 @@ fn menu_bar(ed: &mut Editor, ui: &mut Ui, upd: &crate::update::Actualizador, upd
         ui.menu_button("Archivo", |ui| {
             if ui.button("Guardar escena            Ctrl+S").clicked() {
                 ed.save_scene();
+            }
+            if ui.button("Importar…                   Ctrl+I").clicked() {
+                let d = ed.project.root.join(ed.contenido.carpeta());
+                ed.importador.abrir(false, d, ui.ctx());
+                ui.close();
+            }
+            if ui.button("Importar carpeta…").clicked() {
+                let d = ed.project.root.join(ed.contenido.carpeta());
+                ed.importador.abrir(true, d, ui.ctx());
+                ui.close();
             }
             ui.menu_button("Abrir escena", |ui| {
                 for s in ed.project.scenes() {

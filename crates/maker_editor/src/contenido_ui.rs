@@ -404,7 +404,7 @@ fn barra(ed: &mut Editor, ui: &mut Ui) {
         .response
         .on_hover_text(format!("Efecto de posprocesado WGSL en {}", maker_engine::postproceso::CUSTOM_DIR));
         let destino = ed.project.root.join(&ed.contenido.carpeta);
-        crate::importar::menu(ed, ui, destino);
+        crate::importar::botones(ed, ui, destino);
         if ui.button("Abrir carpeta").clicked() {
             let d = ed.project.root.join(&ed.contenido.carpeta);
             let _ = std::process::Command::new(if cfg!(windows) { "explorer" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" }).arg(d).spawn();

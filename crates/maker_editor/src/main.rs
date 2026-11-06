@@ -16,6 +16,7 @@ mod hub;
 mod normal_ui;
 mod panels;
 mod icons;
+mod iluminacion_ui;
 mod importar;
 mod pixel_icons;
 mod postproceso_ui;

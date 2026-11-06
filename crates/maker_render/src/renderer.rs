@@ -27,6 +27,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 use wgpu::util::DeviceExt;
 
+use crate::gi::{self, GiDebug, GiDraw, GiSystem};
 use crate::postproceso::PostFx;
 use crate::texture;
 
@@ -80,6 +81,8 @@ struct GlobalsU {
     params: [f32; 4],
     points: [PointU; MAX_POINTS],
     viewport: [f32; 4],
+    /// x: GI activa, y: vista de depuración, z: intensidad indirecta, w: de reflejos.
+    gi: [f32; 4],
 }
 
 #[repr(C)]
@@ -121,6 +124,9 @@ struct NormalMapU {
 
 /// Normal map plano (sin relieve): el grupo 3 de quien no tiene.
 const FLAT_NORMAL: usize = 0;
+
+/// Normal map subido: vista + uniforme con su escala.
+type NormalRes = (wgpu::TextureView, wgpu::Buffer);
 
 /// Trabajo del modo automático: generar el normal map de una textura de color.
 struct AutoJob {
@@ -254,6 +260,9 @@ pub struct RenderOptions {
     pub shadows: bool,
     /// Aplica la pila de posprocesado de la escena (las miniaturas no).
     pub post: bool,
+    /// Permite la iluminación global de la escena (las miniaturas no).
+    pub gi: bool,
+    pub gi_debug: GiDebug,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -268,15 +277,21 @@ pub struct FrameStats {
     pub outlines: u32,
     /// Pases de posprocesado (0 sin efectos: el tonemap va en la escena).
     pub post_passes: u32,
+    /// La iluminación global se ejecutó en este fotograma.
+    pub gi: bool,
+    /// Cascadas del volumen de la GI revoxelizadas en este fotograma.
+    pub gi_revoxelized: u32,
+    /// Tiempo de GPU de la GI (ms; última medida, si hay consultas de tiempo).
+    pub gi_ms: Option<f32>,
 }
 
-struct GpuSub {
-    first: u32,
-    count: u32,
+pub(crate) struct GpuSub {
+    pub(crate) first: u32,
+    pub(crate) count: u32,
     mat: usize,
     alpha: Alpha,
     double_sided: bool,
-    /// Normal map del glTF (grupo 3) o `FLAT_NORMAL`.
+    /// Normal map del glTF o `FLAT_NORMAL`.
     normal: usize,
     /// Textura de color sin normal map propio: de ella se generan.
     base: Option<TextureSource>,
@@ -286,15 +301,15 @@ struct GpuSub {
     base_hash: u64,
 }
 
-struct GpuModel {
-    vbuf: wgpu::Buffer,
+pub(crate) struct GpuModel {
+    pub(crate) vbuf: wgpu::Buffer,
     /// Normales suavizadas para el contorno de casco invertido (búfer aparte:
     /// el vértice del PBR no crece).
     smooth: wgpu::Buffer,
     /// Huesos y pesos (solo modelos con piel).
-    skin: Option<wgpu::Buffer>,
-    ibuf: wgpu::Buffer,
-    subs: Vec<GpuSub>,
+    pub(crate) skin: Option<wgpu::Buffer>,
+    pub(crate) ibuf: wgpu::Buffer,
+    pub(crate) subs: Vec<GpuSub>,
     aabb: Aabb,
     /// Huesos de la paleta (0 = estático).
     joints: u32,
@@ -353,16 +368,27 @@ pub struct SceneRenderer {
     fixed: HashMap<(Fixed, bool), wgpu::RenderPipeline>,
     /// Posprocesado; se crea la primera vez que una escena lo usa.
     post: Option<PostFx>,
+    /// Iluminación global; existe solo mientras está activa.
+    pub(crate) gi: Option<GiSystem>,
+    gi_supported: bool,
+    gi_bgl: wgpu::BindGroupLayout,
+    /// Grupo 3 vacío del sombreado cuando la GI está apagada.
+    gi_dummy: wgpu::BindGroup,
+    gi_draws: Vec<GiDraw>,
     shadow_view: wgpu::TextureView,
     sampler: wgpu::Sampler,
     targets: Option<Targets>,
     models: Vec<GpuModel>,
     model_index: HashMap<MeshSource, usize>,
     materials: Vec<wgpu::BindGroup>,
+    /// Recursos de cada material (para combinarlo con su normal map en el grupo 2).
+    material_res: Vec<(wgpu::TextureView, wgpu::Buffer)>,
+    /// Grupo 2 de las pipelines principales por (material, normal map).
+    matn: HashMap<(usize, usize), wgpu::BindGroup>,
     textures: HashMap<String, Option<Arc<wgpu::TextureView>>>,
     white: Arc<wgpu::TextureView>,
-    /// Grupos 3 (normal map); el 0 es el plano.
-    normal_bgs: Vec<wgpu::BindGroup>,
+    /// Normal maps (vista + uniforme); el 0 es el plano.
+    normal_bgs: Vec<NormalRes>,
     /// Normal maps por archivo (clave de la textura) → grupo 3 con escala 1.
     normal_index: HashMap<String, usize>,
     /// Modo automático: clave (textura + parámetros) → grupo 3 (plano hasta que esté).
@@ -397,10 +423,10 @@ const SKIN_ATTRS: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![4 => Uin
 const INK_POS_ATTRS: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![0 => Float32x3];
 const INK_NORMAL_ATTRS: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![1 => Float32x3];
 
-fn vertex_layout() -> wgpu::VertexBufferLayout<'static> {
+pub(crate) fn vertex_layout() -> wgpu::VertexBufferLayout<'static> {
     wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<Vertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &VERTEX_ATTRS }
 }
-fn skin_layout() -> wgpu::VertexBufferLayout<'static> {
+pub(crate) fn skin_layout() -> wgpu::VertexBufferLayout<'static> {
     wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<SkinVertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &SKIN_ATTRS }
 }
 
@@ -502,8 +528,10 @@ impl SceneRenderer {
             ],
         });
 
+        // Grupo 2 de las pipelines principales: material (0..2) + normal map (3, 4). El grupo 3 es
+        // de la iluminación global; las de sombra y contorno usan solo `material_bgl`.
         let normal_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("normal map"),
+            label: Some("material + normal map"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -511,8 +539,16 @@ impl SceneRenderer {
                     ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                uniform_entry(2, false),
                 wgpu::BindGroupLayoutEntry {
-                    binding: 1,
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
                     count: None,
@@ -574,9 +610,12 @@ impl SceneRenderer {
         let (object_capacity, joint_capacity) = (256, 1024);
         let (object_buf, joint_buf, object_bg) = Self::make_object_buffers(&device, &object_bgl, object_capacity, joint_capacity);
 
+        let gi_bgl = gi::shading_bgl(&device);
+        let gi_supported = gi::soportada(&device);
+        let gi_dummy = gi::shading_dummy(&device, &gi_bgl);
         let main_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("main"),
-            bind_group_layouts: &[Some(&globals_bgl), Some(&object_bgl), Some(&material_bgl), Some(&normal_bgl)],
+            bind_group_layouts: &[Some(&globals_bgl), Some(&object_bgl), Some(&normal_bgl), Some(&gi_bgl)],
             immediate_size: 0,
         });
         let ink_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -618,12 +657,19 @@ impl SceneRenderer {
             globals_only,
             fixed: HashMap::new(),
             post: None,
+            gi: None,
+            gi_supported,
+            gi_bgl,
+            gi_dummy,
+            gi_draws: Vec::new(),
             shadow_view,
             sampler,
             targets: None,
             models: Vec::new(),
             model_index: HashMap::new(),
             materials: Vec::new(),
+            material_res: Vec::new(),
+            matn: HashMap::new(),
             textures: HashMap::new(),
             white,
             normal_bgs: vec![flat_bg],
@@ -820,14 +866,31 @@ impl SceneRenderer {
         view.unwrap_or_else(|| self.white.clone())
     }
 
-    fn make_normal_bg(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, view: &wgpu::TextureView, scale: f32) -> wgpu::BindGroup {
+    fn make_normal_bg(device: &wgpu::Device, _layout: &wgpu::BindGroupLayout, view: &wgpu::TextureView, scale: f32) -> NormalRes {
         let u = NormalMapU { params: [scale, 0.0, 0.0, 0.0] };
         let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("normal map"), contents: bytemuck::bytes_of(&u), usage: wgpu::BufferUsages::UNIFORM });
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("normal map"),
-            layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(view) }, wgpu::BindGroupEntry { binding: 1, resource: buf.as_entire_binding() }],
-        })
+        (view.clone(), buf)
+    }
+
+    /// Grupo 2 de las pipelines principales para (material, normal map), cacheado.
+    fn ensure_matn(&mut self, mat: usize, nrm: usize) {
+        if self.matn.contains_key(&(mat, nrm)) {
+            return;
+        }
+        let (tex, mbuf) = &self.material_res[mat];
+        let (ntex, nbuf) = &self.normal_bgs[nrm];
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("material + normal map"),
+            layout: &self.normal_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(tex) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                wgpu::BindGroupEntry { binding: 2, resource: mbuf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(ntex) },
+                wgpu::BindGroupEntry { binding: 4, resource: nbuf.as_entire_binding() },
+            ],
+        });
+        self.matn.insert((mat, nrm), bg);
     }
 
     /// Lee y sube un normal map (lineal, mips renormalizados). Sin él, plano.
@@ -889,6 +952,7 @@ impl SceneRenderer {
                     self.normal_index.insert(key, n);
                 } else {
                     self.normal_bgs[i] = bg;
+                    self.matn.retain(|k, _| k.1 != i);
                 }
             }
             None => {
@@ -1035,6 +1099,7 @@ impl SceneRenderer {
             ],
         });
         self.materials.push(bg);
+        self.material_res.push((tex.clone(), buf));
         self.materials.len() - 1
     }
 
@@ -1088,6 +1153,8 @@ impl SceneRenderer {
         self.models.clear();
         self.model_index.clear();
         self.materials.clear();
+        self.material_res.clear();
+        self.matn.clear();
         self.textures.clear();
         self.normal_bgs.truncate(1);
         self.normal_index.clear();
@@ -1276,6 +1343,18 @@ impl SceneRenderer {
             Some(None) => (3, 0.0),
             None => (0, 0.0),
         };
+        // Iluminación global: solo si la escena la pide, la vista la permite y la GPU puede.
+        let gi_on = opts.gi && env.iluminacion_global.activa() && self.gi_supported;
+        if !gi_on {
+            // Sin GI no se guarda nada en la GPU.
+            self.gi = None;
+        }
+        let gi_u = if gi_on {
+            let g = &env.iluminacion_global;
+            [1.0, opts.gi_debug.code(), g.intensidad_indirecta.max(0.0), g.intensidad_reflejos.max(0.0)]
+        } else {
+            [0.0; 4]
+        };
         let mut pts = [PointU::default(); MAX_POINTS];
         for (i, (_, p)) in points.iter().enumerate() {
             pts[i] = *p;
@@ -1294,6 +1373,7 @@ impl SceneRenderer {
             params: [points.len() as f32, env.exposure * 2f32.powf(exposure_ev), 0.0, SHADOW_SIZE as f32],
             points: pts,
             viewport: [w as f32, h as f32, tonemap as f32, 0.0],
+            gi: gi_u,
         };
         self.queue.write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&globals));
         // El pase de sombras usa el mismo Globals con la matriz de la luz como cámara.
@@ -1322,7 +1402,8 @@ impl SceneRenderer {
             if !visible {
                 stats.culled += 1;
             }
-            if !visible && !(mr.cast_shadows && shadows_on) {
+            // Con GI también cuenta lo que queda fuera de la vista (rebota luz).
+            if !visible && !(mr.cast_shadows && shadows_on) && !gi_on {
                 continue;
             }
             // Paleta: una vez por entidad y fotograma, compartida por sus submallas.
@@ -1380,6 +1461,7 @@ impl SceneRenderer {
         }
         for d in &draws {
             if d.visible {
+                self.ensure_matn(d.mat, d.nrm);
                 self.ensure_pipeline(d.key);
                 if d.ink {
                     self.ensure_fixed(Fixed::Ink { skinned: d.key.skinned }, hdr);
@@ -1390,6 +1472,37 @@ impl SceneRenderer {
             }
             if d.shadow && shadows_on {
                 self.ensure_shadow_pipeline(ShadowKey { skinned: d.key.skinned, mask: d.key.alpha == Alpha::Mask, double_sided: d.key.double_sided });
+            }
+        }
+        // Lo que ve la GI: opacos y recortes, con su caja y su huella.
+        let mut gi_draws = std::mem::take(&mut self.gi_draws);
+        gi_draws.clear();
+        if gi_on {
+            for d in draws.iter().filter(|d| d.key.alpha != Alpha::Blend) {
+                let m = &self.models[d.model];
+                let o = d.slot as usize * OBJ_STRIDE as usize;
+                let obj: &ObjectU = bytemuck::from_bytes(&bytes[o..o + std::mem::size_of::<ObjectU>()]);
+                let wb = m.aabb.transformed(&Mat4::from_cols_array_2d(&obj.model));
+                // Con piel, la paleta de huesos también cuenta (se revoxeliza al animar).
+                let mut semilla = ((d.model as u64) << 32) ^ ((d.sub as u64) << 16) ^ d.mat as u64;
+                if d.key.skinned {
+                    let j0 = obj.skin[0] as usize;
+                    let pal = joints.get(j0..j0 + m.joints as usize).unwrap_or(&[]);
+                    semilla = gi::huella(bytemuck::cast_slice(pal), semilla);
+                }
+                gi_draws.push(GiDraw {
+                    model: d.model,
+                    sub: d.sub,
+                    slot: d.slot,
+                    mat: d.mat,
+                    skinned: d.key.skinned,
+                    mask: d.key.alpha == Alpha::Mask,
+                    double_sided: d.key.double_sided,
+                    visible: d.visible,
+                    min: wb.min,
+                    max: wb.max,
+                    huella: gi::huella(&bytes[o..o + std::mem::size_of::<ObjectU>()], semilla),
+                });
             }
         }
         let need_objects = slot as u64;
@@ -1451,6 +1564,28 @@ impl SceneRenderer {
                 }
             }
         }
+        // Iluminación global: tras las sombras (la inyección las usa), antes del color.
+        if gi_on {
+            if self.gi.is_none() {
+                self.gi = Some(GiSystem::new(&self.device, &self.queue, &self.object_bgl, &self.material_bgl, &self.gi_bgl, &self.globals_buf, &self.shadow_view));
+            }
+            let frame = gi::Frame {
+                draws: &gi_draws,
+                models: &self.models,
+                materials: &self.materials,
+                object_bg: &self.object_bg,
+                obj_stride: OBJ_STRIDE,
+                view,
+                env,
+                size: (w, h),
+                debug: opts.gi_debug,
+            };
+            if let Some(g) = self.gi.as_mut() {
+                g.encode(&mut enc, &frame, &env.iluminacion_global);
+                stats.gi = true;
+                stats.gi_revoxelized = g.revoxelizadas;
+            }
+        }
         // Color: directo a sRGB, o a HDR si hay efectos de posprocesado.
         if hdr {
             let (size, depth) = self.targets.as_ref().map(|t| (t.size, t.depth.clone())).unwrap();
@@ -1480,6 +1615,7 @@ impl SceneRenderer {
                 multiview_mask: None,
             });
             pass.set_bind_group(0, &self.globals_bg, &[]);
+            pass.set_bind_group(3, self.gi.as_ref().and_then(|g| g.shading_bg(opts.gi_debug)).unwrap_or(&self.gi_dummy), &[]);
             pass.set_pipeline(&self.fixed[&(Fixed::Sky, hdr)]);
             pass.draw(0..3, 0..1);
             let mut bound: Option<PipeKey> = None;
@@ -1499,12 +1635,9 @@ impl SceneRenderer {
                         pass.set_bind_group(1, &self.object_bg, &[(d.slot as u64 * OBJ_STRIDE) as u32]);
                         last.0 = d.slot;
                     }
-                    if d.mat != last.1 {
-                        pass.set_bind_group(2, &self.materials[d.mat], &[]);
+                    if d.mat != last.1 || d.nrm != last.3 {
+                        pass.set_bind_group(2, &self.matn[&(d.mat, d.nrm)], &[]);
                         last.1 = d.mat;
-                    }
-                    if d.nrm != last.3 {
-                        pass.set_bind_group(3, &self.normal_bgs[d.nrm], &[]);
                         last.3 = d.nrm;
                     }
                     if d.model != last.2 {
@@ -1584,11 +1717,33 @@ impl SceneRenderer {
             stats.post_passes = post.passes;
         }
         self.queue.submit(Some(enc.finish()));
+        if let Some(g) = self.gi.as_mut() {
+            g.tras_enviar();
+            stats.gi_ms = g.tiempos(false).map(|t| t.total());
+        }
+        self.gi_draws = gi_draws;
         self.draws = draws;
         self.order = order;
         self.object_bytes = bytes;
         self.joint_data = joints;
         self.stats = stats;
+    }
+
+    /// Tiempos de GPU de la GI del último fotograma medido (solo si el
+    /// dispositivo tiene consultas de marca de tiempo). `esperar` bloquea
+    /// hasta que llegue la medida del último fotograma.
+    pub fn gi_tiempos(&mut self, esperar: bool) -> Option<gi::GiTiempos> {
+        self.gi.as_mut()?.tiempos(esperar)
+    }
+
+    /// Memoria de GPU reservada por la GI (bytes; 0 si está apagada).
+    pub fn gi_memoria(&self) -> u64 {
+        self.gi.as_ref().map(|g| g.memoria()).unwrap_or(0)
+    }
+
+    /// ¿Puede este dispositivo ejecutar la GI por software?
+    pub fn gi_soportada(&self) -> bool {
+        self.gi_supported
     }
 
     /// Lee la textura de salida a RGBA8 (para capturas y tests). Bloquea.

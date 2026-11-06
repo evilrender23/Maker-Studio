@@ -28,6 +28,9 @@ pub struct Environment {
     /// Pila ordenada de efectos de posprocesado.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub post: Vec<crate::postproceso::PostEffect>,
+    /// Iluminación global dinámica (desactivada en escenas antiguas).
+    #[serde(skip_serializing_if = "crate::iluminacion::IluminacionGlobal::es_defecto")]
+    pub iluminacion_global: crate::iluminacion::IluminacionGlobal,
 }
 
 impl Default for Environment {
@@ -43,6 +46,7 @@ impl Default for Environment {
             gravity: [0.0, -9.81, 0.0],
             global_shading: Default::default(),
             post: Vec::new(),
+            iluminacion_global: Default::default(),
         }
     }
 }

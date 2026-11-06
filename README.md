@@ -68,6 +68,13 @@ scripts de cada juego.
 - **Estilo visual**: galería de estilos (realista, toon, anime, cómic, retro
   PS1, cinemático, noir, pastel) con miniaturas en vivo de tu escena, un clic
   para aplicar, intensidad y estilos propios en `estilos/*.mvisual`.
+- **Iluminación global dinámica** por escena («Lumen (software)»): luz
+  indirecta con rebotes múltiples, objetos emisivos que iluminan, cielo con
+  oclusión y reflejos trazados. Trazado en pantalla primero y después un
+  clipmap de vóxeles alrededor de la cámara, con acumulación temporal y
+  filtro espacial; cuatro niveles de calidad (≈ 1,1 ms en Media a 1080 p en
+  una RTX 4090) y vistas de depuración en el visor. Ver
+  [docs/ILUMINACION.md](docs/ILUMINACION.md).
 - **Interfaz de juego**: lienzos con escala por resolución de referencia,
   anclas y pivote como `RectTransform`, cajas y rejillas como los contenedores
   de Godot, paneles, imágenes con 9-slice, texto con fuentes TTF/OTF del

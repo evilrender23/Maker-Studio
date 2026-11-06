@@ -35,6 +35,7 @@ struct Globals {
     params: vec4<f32>,       // x: nº luces puntuales, y: exposición, z: tiempo, w: tamaño del mapa de sombras
     points: array<PointLight, 16>,
     viewport: vec4<f32>,     // ancho, alto (px), curva de tonemap (0 ACES, 1 AgX, 2 recorte, 3 HDR sin curva)
+    gi: vec4<f32>,           // GI activa, vista de depuración, intensidad indirecta, intensidad de reflejos
 };
 
 struct Object {
@@ -68,8 +69,12 @@ struct Material {
 struct NormalMapU {
     params: vec4<f32>,
 };
-@group(3) @binding(0) var normal_tex: texture_2d<f32>;
-@group(3) @binding(1) var<uniform> nmap: NormalMapU;
+@group(2) @binding(3) var normal_tex: texture_2d<f32>;
+@group(2) @binding(4) var<uniform> nmap: NormalMapU;
+// Iluminación global (gi/): difusa y reflejos a la resolución del trazado + su profundidad.
+@group(3) @binding(0) var gi_dif: texture_2d<f32>;
+@group(3) @binding(1) var gi_spec: texture_2d<f32>;
+@group(3) @binding(2) var gi_depth: texture_depth_2d;
 
 struct VIn {
     @location(0) pos: vec3<f32>,
@@ -279,6 +284,63 @@ fn sky_color(dir: vec3<f32>) -> vec3<f32> {
     return mix(g.sky_horizon.rgb, g.ground.rgb, pow(min(-t * 3.0, 1.0), 0.5));
 }
 
+struct GiMuestra {
+    dif: vec3<f32>,
+    spec: vec3<f32>,
+    ok: bool,
+};
+
+// Muestra la GI con un bilineal que solo cuenta los texeles de la misma
+// superficie (subida de resolución guiada por la profundidad). Sin ninguno
+// válido (transparentes, bordes finos) se vuelve al ambiente de siempre.
+fn gi_muestra(frag: vec4<f32>, world: vec3<f32>) -> GiMuestra {
+    var r: GiMuestra;
+    r.ok = false;
+    let dims = vec2<i32>(textureDimensions(gi_depth));
+    let p = frag.xy * vec2<f32>(dims) / g.viewport.xy - 0.5;
+    let b = vec2<i32>(floor(p));
+    let f = p - floor(p);
+    let dist = length(world - g.cam_pos.xyz);
+    let tol = 0.05 + dist * 0.02;
+    var suma = 0.0;
+    var dif = vec3<f32>(0.0);
+    var spec = vec3<f32>(0.0);
+    for (var k = 0; k < 4; k += 1) {
+        let o = vec2<i32>(k & 1, k >> 1);
+        let q = clamp(b + o, vec2<i32>(0), dims - 1);
+        let d = textureLoad(gi_depth, q, 0);
+        let uv = (vec2<f32>(q) + 0.5) / vec2<f32>(dims);
+        let w4 = g.inv_view_proj * vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, d, 1.0);
+        let wq = w4.xyz / w4.w;
+        let bil = select(1.0 - f.x, f.x, o.x == 1) * select(1.0 - f.y, f.y, o.y == 1);
+        let w = bil * select(0.0, 1.0, d < 1.0 && length(wq - world) < tol) + bil * 1e-3;
+        dif += textureLoad(gi_dif, q, 0).rgb * w;
+        spec += textureLoad(gi_spec, q, 0).rgb * w;
+        suma += w;
+    }
+    if (suma > 0.02) {
+        r.dif = dif / suma * g.gi.z;
+        r.spec = spec / suma * g.gi.w;
+        r.ok = true;
+    }
+    return r;
+}
+
+// Vistas de depuración de la GI (barra del visor). Devuelve a < 0 si no hay.
+fn gi_depuracion(frag: vec4<f32>, world: vec3<f32>) -> vec4<f32> {
+    let modo = u32(g.gi.y + 0.5);
+    if (g.gi.x < 0.5 || modo == 0u) {
+        return vec4<f32>(-1.0);
+    }
+    if (modo == 1u) {
+        let dims = vec2<f32>(textureDimensions(gi_dif));
+        let q = vec2<i32>(frag.xy * dims / g.viewport.xy);
+        return vec4<f32>(textureLoad(gi_dif, q, 0).rgb, 1.0);
+    }
+    let s = gi_muestra(frag, world);
+    return vec4<f32>(select(s.spec, s.dif, modo == 2u), 1.0);
+}
+
 @fragment
 fn fs_main(in: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     let base = base_albedo(in);
@@ -308,15 +370,28 @@ fn fs_main(in: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
             let atten = falloff * falloff / (dist * dist + 1.0);
             color += brdf(n, v, d / max(dist, 1e-4), albedo, metallic, rough) * p.color.rgb * atten;
         }
-        // Ambiente hemisférico + reflejo aproximado del cielo.
-        let amb = g.ground.w;
-        let hemi = mix(g.ground.rgb, g.sky_top.rgb, n.y * 0.5 + 0.5);
         let f0 = mix(vec3<f32>(0.04), albedo, metallic);
         let fr = f0 + (max(vec3<f32>(1.0 - rough), f0) - f0) * pow(1.0 - max(dot(n, v), 0.0), 5.0);
-        let env = sky_color(reflect(-v, n));
-        color += hemi * albedo * (1.0 - metallic) * amb + env * fr * amb * (1.0 - rough * 0.7);
+        var gi = GiMuestra();
+        if (g.gi.x > 0.5) {
+            gi = gi_muestra(in.clip, in.world);
+        }
+        if (gi.ok) {
+            // Iluminación global: difusa indirecta y reflejos trazados.
+            color += gi.dif * albedo * (1.0 - metallic) + gi.spec * fr;
+        } else {
+            // Ambiente hemisférico + reflejo aproximado del cielo.
+            let amb = g.ground.w;
+            let hemi = mix(g.ground.rgb, g.sky_top.rgb, n.y * 0.5 + 0.5);
+            let env = sky_color(reflect(-v, n));
+            color += hemi * albedo * (1.0 - metallic) * amb + env * fr * amb * (1.0 - rough * 0.7);
+        }
         color += obj.emissive.rgb * obj.emissive.w;
         color = apply_fog(color, in.world);
+        let dbg = gi_depuracion(in.clip, in.world);
+        if (dbg.a > 0.0) {
+            color = dbg.rgb;
+        }
     }
     return finish(tonemap(color * g.params.y), base.a);
 }
@@ -378,7 +453,15 @@ fn fs_toon(in: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     let bands = clamp(obj.shadow_tint.w, 2.0, 4.0);
     let tint = obj.shadow_tint.rgb;
     // Luz de relleno plana: el ambiente sin gradiente para no romper las bandas.
-    let fill = mix(g.ground.rgb, g.sky_top.rgb, 0.6) * g.ground.w * 0.35;
+    var fill = mix(g.ground.rgb, g.sky_top.rgb, 0.6) * g.ground.w * 0.35;
+    if (g.gi.x > 0.5) {
+        // Con GI: la luz indirecta posterizada en escalones, con su tono.
+        let gi = gi_muestra(in.clip, in.world);
+        if (gi.ok) {
+            let l = luma(gi.dif);
+            fill = gi.dif / max(l, 1e-4) * posterize(l, 0.12, s) * 0.6;
+        }
+    }
     var color = albedo * (tint + fill);
     var lit = 0.0;
     if (g.sun_dir.w > 0.5) {
@@ -413,6 +496,10 @@ fn fs_toon(in: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     }
     color += obj.emissive.rgb * obj.emissive.w;
     color = apply_fog(color, in.world);
+    let dbg = gi_depuracion(in.clip, in.world);
+    if (dbg.a > 0.0) {
+        color = dbg.rgb;
+    }
     return finish(tonemap(color * g.params.y), base.a);
 }
 
@@ -436,6 +523,13 @@ fn fs_hatch(in: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
     let n = shading_normal(in, front);
     let ng = geometric_normal(in, front);
     var tone = g.ground.w * 0.3;
+    if (g.gi.x > 0.5) {
+        // Con GI: la luminancia de la luz indirecta en vez del ambiente plano.
+        let gi = gi_muestra(in.clip, in.world);
+        if (gi.ok) {
+            tone = luma(gi.dif);
+        }
+    }
     if (g.sun_dir.w > 0.5) {
         let l = -normalize(g.sun_dir.xyz);
         tone += max(dot(n, l), 0.0) * shadow_factor(in.world, ng) * luma(g.sun_color.rgb / PI);

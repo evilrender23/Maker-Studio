@@ -169,7 +169,7 @@ impl eframe::App for Player {
                     }
                 }
             };
-            self.renderer.render(&self.scene, &view, &RenderOptions { shadows: true, post: true, ..Default::default() });
+            self.renderer.render(&self.scene, &view, &RenderOptions { shadows: true, post: true, gi: true, ..Default::default() });
             // Interfaz encima de la imagen final.
             if let Some(v) = self.renderer.output_view() {
                 self.ui.dibujar(&mut self.runtime.ui, v, self.renderer.output_size(), None);

@@ -1311,17 +1311,21 @@ fn outside_frustum(vp: &Mat4, b: &Aabb) -> bool {
 mod tests {
     use super::*;
 
-    fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
+    /// Dispositivo para las pruebas. Devuelve también un cerrojo: las pruebas de GPU van de una
+    /// en una, porque en paralelo algunos drivers se quedan bloqueados.
+    fn device() -> Option<(wgpu::Device, wgpu::Queue, std::sync::MutexGuard<'static, ()>)> {
+        static GPU: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let cerrojo = GPU.lock().unwrap_or_else(|e| e.into_inner());
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok().map(|(d, q)| (d, q, cerrojo))
     }
 
     /// Renderiza la escena inicial sin ventana y comprueba que el cubo azul,
     /// el suelo y el cielo aparecen donde deben.
     #[test]
     fn renders_starter_scene_headless() {
-        let Some((device, queue)) = device() else {
+        let Some((device, queue, _gpu)) = device() else {
             eprintln!("sin adaptador GPU: test omitido");
             return;
         };
@@ -1377,7 +1381,7 @@ mod tests {
     #[test]
     fn empty_post_stack_is_identical_and_free() {
         use maker_engine::postproceso::*;
-        let Some((device, queue)) = device() else { return };
+        let Some((device, queue, _gpu)) = device() else { return };
         let mut scene = Scene::starter();
         let mut r = SceneRenderer::new(&device, &queue);
         r.resize(320, 180);
@@ -1397,7 +1401,7 @@ mod tests {
     #[test]
     fn hdr_chain_matches_direct_output() {
         use maker_engine::postproceso::*;
-        let Some((device, queue)) = device() else { return };
+        let Some((device, queue, _gpu)) = device() else { return };
         let mut scene = Scene::starter();
         let mut r = SceneRenderer::new(&device, &queue);
         r.resize(320, 180);
@@ -1426,7 +1430,7 @@ mod tests {
     #[test]
     fn builtin_effects_run_and_change_the_image() {
         use maker_engine::postproceso::*;
-        let Some((device, queue)) = device() else { return };
+        let Some((device, queue, _gpu)) = device() else { return };
         let mut scene = Scene::starter();
         let mut r = SceneRenderer::new(&device, &queue);
         r.resize(320, 180);
@@ -1459,7 +1463,7 @@ mod tests {
     #[test]
     fn custom_effects_compile_reload_and_fail_safely() {
         use maker_engine::postproceso::*;
-        let Some((device, queue)) = device() else { return };
+        let Some((device, queue, _gpu)) = device() else { return };
         let root = std::env::temp_dir().join(format!("maker-post-render-{}", std::process::id()));
         let dir = root.join(CUSTOM_DIR);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1524,7 +1528,7 @@ mod tests {
     /// El sombreado global cambia el modelo de todo salvo de las excepciones.
     #[test]
     fn global_shading_overrides_materials() {
-        let Some((device, queue)) = device() else { return };
+        let Some((device, queue, _gpu)) = device() else { return };
         let mut scene = Scene::starter();
         let mut r = SceneRenderer::new(&device, &queue);
         r.resize(320, 180);
@@ -1561,7 +1565,7 @@ mod tests {
     /// agrupan por pipeline y el contorno toon sale con su color.
     #[test]
     fn renders_stylized_models_grouped_by_pipeline() {
-        let Some((device, queue)) = device() else {
+        let Some((device, queue, _gpu)) = device() else {
             eprintln!("sin adaptador GPU: test omitido");
             return;
         };

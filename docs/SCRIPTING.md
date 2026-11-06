@@ -65,6 +65,8 @@ instancia; el botón ↺ vuelve al valor por defecto del código.
 | Animación    | `play_animation(e, "Walk_Loop", fundido_s)` (devuelve `false` si no hay Animador), `set_animation_speed(e, v)` |
 | Entrada      | `key_down`, `key_pressed`, `axis(neg, pos)`, `mouse_down`, `mouse_delta`, `set_cursor_mode(CursorMode::…)` |
 | Física       | `velocity`, `set_velocity`, `apply_impulse`, `apply_impulse_to`, `raycast(origen, dir, max)` |
+| Tiempo de juego | `set_time_scale(s)` (0 = pausa: física, animación y `dt`; la interfaz sigue respondiendo) |
+| Interfaz     | `ui(nombre)`, `ui_set_text`/`ui_text`, `ui_set_value`/`ui_value`, `ui_set_visible`/`ui_visible`, `ui_set_interactable`, `ui_set_opacity`, `ui_set_style`, `ui_set_theme`, `ui_set_image`, `ui_set_color`, `ui_clicked`, `ui_changed`, `ui_event(e, ui_event::…)`, `ui_rect`, `ui_set_position`, `ui_set_size`, `ui_instantiate`, `ui_pointer_over`, `ui_draw(e, \|p\| …)`. Ver [INTERFAZ.md](INTERFAZ.md) |
 
 `spawn_flags::DYNAMIC_BODY` / `STATIC_BODY` añaden cuerpo rígido y
 colisionador al crear una primitiva.

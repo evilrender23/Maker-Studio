@@ -54,6 +54,11 @@ impl Input {
         self.texto.clear();
         self.texto.push_str(&o.texto);
     }
+    /// Suelta una tecla (la consume la interfaz).
+    pub fn soltar(&mut self, k: Key) {
+        self.down[k as usize] = false;
+        self.pressed[k as usize] = false;
+    }
     /// Suelta todas las teclas (las consume la interfaz).
     pub fn soltar_teclas(&mut self) {
         self.down = [false; Key::COUNT as usize];

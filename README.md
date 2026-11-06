@@ -56,6 +56,15 @@ scripts de cada juego.
   retro, enfoque, FXAA, contorno en pantalla, niebla de altura, profundidad de
   campo) y efectos WGSL propios en `shaders/post/` con parámetros en el
   Inspector y recarga en caliente. Sin efectos no cuesta ningún pase.
+- **Interfaz de juego**: lienzos con escala por resolución de referencia,
+  anclas y pivote como `RectTransform`, cajas y rejillas como los contenedores
+  de Godot, paneles, imágenes con 9-slice, texto con fuentes TTF/OTF del
+  proyecto, botones, barras, deslizadores, casillas, campos de texto, máscaras
+  y widgets dibujados por script. El aspecto sale de **estilos y temas del
+  proyecto** (`.mestilo`, `.mtema`) con estados, transiciones, herencia y
+  retoques por elemento. Incluye plantillas reutilizables (`.mui`), editor de
+  estilos con vista previa, edición 2D en la vista y un pase SDF por lotes
+  sobre la imagen final. Ver [docs/INTERFAZ.md](docs/INTERFAZ.md).
 - **Scripting en Rust** (`maker_api`): cada proyecto tiene un crate `scripts/`
   que el editor compila (F7) y recarga en caliente; propiedades editables desde
   el Inspector; los pánicos se atrapan y salen en la consola. Ver

@@ -5,7 +5,7 @@ Maker Studio es un workspace de Cargo con cinco crates:
 | Crate          | Qué es |
 |----------------|--------|
 | `maker_api`    | API de scripting: tipos C-ABI, el trait `Script`, `Ctx`, `Props` y la macro `export_scripts!`. Es lo único de lo que depende el crate de scripts de un juego. |
-| `maker_engine` | Núcleo sin gráficos: ECS, escena y su formato, jerarquía de transforms, mallas (primitivas y glTF), modelos con materiales, esqueletos y clips (`model.rs`), animación (`animation.rs`), biblioteca integrada (`biblioteca.rs`), física, entrada, carga de scripts, bucle de juego, proyectos. Se prueba sin ventana. |
+| `maker_engine` | Núcleo sin gráficos: ECS, interfaz de juego (`ui/`: layout, estilos, fuentes, plantillas, entrada y lista de dibujo), escena y su formato, jerarquía de transforms, mallas (primitivas y glTF), modelos con materiales, esqueletos y clips (`model.rs`), animación (`animation.rs`), biblioteca integrada (`biblioteca.rs`), física, entrada, carga de scripts, bucle de juego, proyectos. Se prueba sin ventana. |
 | `maker_render` | Renderizador de escena sobre wgpu (Vulkan, Metal, DX12 o GL según la plataforma). |
 | `maker_editor` | El editor (`maker-studio`), con egui. |
 | `maker_player` | El reproductor sin editor (`maker-player`), que es el ejecutable de un juego exportado. |
@@ -27,12 +27,18 @@ Maker Studio es un workspace de Cargo con cinco crates:
 | Modelo de sombreado por material | Unreal (*shading models*), Godot (`render_mode`) | `Material::shading`: PBR, toon, sin luz o plumilla; un pipeline por modelo. |
 | Biblioteca de assets integrada | Unreal (Starter Content / Fab), Unity (Asset Store) | `assets/biblioteca` va con el motor y se referencia como `biblioteca://pack/modelo.glb`; exportar copia solo lo usado. Ver [BIBLIOTECA.md](BIBLIOTECA.md). |
 | Animación esquelética con reasignación por nombre de hueso | Unreal (IK Retargeter), Godot (`BoneMap`) | Componente `Animator`; skinning en GPU con una paleta de huesos por entidad y fotograma. |
+| Interfaz como entidades con rectángulo anclado, contenedores y estilos | Unity UGUI (`RectTransform`, `CanvasScaler`, `CanvasGroup`), Godot (`Control`, `Container`, `Theme`), Unreal UMG | Componentes `Lienzo`, `RectUi`, `Contenedor` y `WidgetUi` en el ECS; estilos y temas JSON del proyecto con herencia y retoques locales; plantillas `.mui` como prefabs. Ver [INTERFAZ.md](INTERFAZ.md). |
 | Lanzar el juego aparte del editor | Unreal "Standalone Game" | Archivo → Ejecutar en ventana aparte (`maker-player`). |
 | Exportar el juego | los tres | Archivo → Exportar juego: reproductor + escenas + assets + biblioteca de scripts en `export/<nombre>/`. |
 | Project Hub | Unity Hub, gestor de proyectos de Godot | Pantalla inicial con recientes, nuevo (demo o básico) y abrir. |
 | Controles de viewport | Unity / Unreal | Clic derecho + WASDQE para volar, Alt+clic para orbitar, botón central para desplazar, W/E/R para gizmos, F para encuadrar. |
 
 ## Rendimiento
+
+- Interfaz: layout y estilos resueltos solo cuando algo cambia; lista de
+  dibujo reutilizada sin reservas en régimen estable; un pipeline de quads
+  instanciados con SDF y una llamada de dibujo por lote (imagen + recorte);
+  atlas de glifos que sube solo las filas nuevas.
 
 - Perfil `release` con `opt-level = 3`, LTO *thin* y `codegen-units = 4`; en
   `dev` las dependencias se compilan optimizadas para que el editor sea fluido
@@ -60,7 +66,9 @@ piel) → cielo (triángulo a pantalla completa) → opacos y recortes agrupados
 pipeline (PBR y sin luz → toon → plumilla) → contornos de casco invertido de
 los materiales toon y plumilla → transparentes de atrás adelante → contorno de
 selección → rejilla infinita del editor (con desvanecimiento) → posprocesado
-(solo si la escena tiene efectos activos; ver [SHADERS.md](SHADERS.md)).
+(solo si la escena tiene efectos activos; ver [SHADERS.md](SHADERS.md)) →
+interfaz del juego (`maker_render::ui`, sobre la imagen final y sin
+posprocesar; ver [INTERFAZ.md](INTERFAZ.md)).
 
 Cada submalla glTF tiene su material: textura de color base (sRGB, mipmaps,
 trilineal + anisotropía ×16), factor, modo alfa (opaco, recorte con

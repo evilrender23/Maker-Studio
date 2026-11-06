@@ -722,6 +722,9 @@ impl Script for Hud {
     fn start(&mut self, ctx: &mut Ctx) {
         self.jugador = ctx.find("Jugador");
         self.vida = 1.0;
+        // La demo no usa el ratón para la cámara: cursor libre para el menú,
+        // y así Esc llega al script en vez de soltar la captura.
+        ctx.set_cursor_mode(CursorMode::Libre);
         for i in 1..=10 {
             if let Some(c) = ctx.find(&format!("Caja {i}")) {
                 self.cajas.push((c, ctx.position_of(c)));
@@ -737,8 +740,6 @@ impl Script for Hud {
                 ctx.ui_set_visible(p, self.pausa);
             }
             ctx.set_time_scale(if self.pausa { 0.0 } else { 1.0 });
-            // El menú necesita el cursor libre; al volver, se captura otra vez.
-            ctx.set_cursor_mode(if self.pausa { CursorMode::Libre } else { CursorMode::Bloqueado });
         }
         // Cajas fuera de su sitio = puntos.
         let movidas = self.cajas.iter().filter(|(c, p0)| ctx.exists(*c) && (ctx.position_of(*c) - *p0).length() > 0.5).count() as u32;

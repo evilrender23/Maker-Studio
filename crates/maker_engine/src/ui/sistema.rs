@@ -770,12 +770,13 @@ impl SistemaUi {
         }
         self.captura_teclado = false;
         if let Some(f) = self.foco {
-            if !self.indice.contains_key(&f) {
+            if !self.indice.get(&f).is_some_and(|&i| self.nodos[i as usize].visible && self.nodos[i as usize].interactuable) {
                 self.foco = None;
             } else if input.key_pressed(Key::Escape as u32) {
                 self.foco = None;
             } else {
-                self.captura_teclado = true;
+                // Un campo de texto se queda todo el teclado; el resto, solo sus teclas.
+                self.captura_teclado = self.tipo(f) == Some(TipoWidget::CampoTexto);
                 match self.tipo(f) {
                     Some(TipoWidget::CampoTexto) => {
                         let mut texto = scene.get::<WidgetUi>(f).and_then(|w| w.clase.texto().map(str::to_owned)).unwrap_or_default();
@@ -836,6 +837,10 @@ impl SistemaUi {
         }
         if self.captura_teclado {
             out.soltar_teclas();
+        } else if self.foco.is_some() {
+            for k in [Key::Enter, Key::Space, Key::Left, Key::Right, Key::Tab] {
+                out.soltar(k);
+            }
         }
     }
 
@@ -1550,6 +1555,21 @@ mod tests {
         ui.procesar_entrada(&mut s, &i);
         assert!(ui.evento(campo, ev::ENVIA) && ui.foco().is_none());
         assert_eq!(s.get::<WidgetUi>(campo).unwrap().clase.texto(), Some("hola"));
+        // Tab da el foco a un control (no a un campo): solo se queda con sus
+        // teclas (Intro, Espacio, flechas); WASD sigue llegando al juego.
+        i.end_frame();
+        i.set_key(Key::Enter, false);
+        i.set_key(Key::Tab, true);
+        ui.procesar_entrada(&mut s, &i);
+        assert_eq!(ui.foco(), Some(des));
+        i.end_frame();
+        i.set_key(Key::Tab, false);
+        i.set_key(Key::W, true);
+        i.set_key(Key::Right, true);
+        ui.procesar_entrada(&mut s, &i);
+        ui.filtrar(&i, &mut juego);
+        assert!(juego.key_down(Key::W as u32) && !juego.key_down(Key::Right as u32));
+        assert!(ui.evento(des, ev::CAMBIO));
     }
 
     #[test]

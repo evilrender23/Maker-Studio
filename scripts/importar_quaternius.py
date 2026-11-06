@@ -12,7 +12,7 @@ esos zips ya descomprimidos (una carpeta por pack). Solo se usan los glTF/GLB.
 Por cada modelo escribe un .glb autocontenido en geometría que referencia
 texturas compartidas del pack (`<pack>/texturas/*.jpg|png`):
   - solo se conserva el color base (sin normales, ORM, ni UV/colores extra);
-  - texturas reducidas a 1024 px como máximo (512 si no pierden detalle),
+  - texturas reducidas a 2048 px como máximo (JPEG calidad 92, color sin submuestrear),
     JPEG salvo las que necesitan alfa (PNG con los bordes transparentes
     rellenados para que el filtrado no oscurezca las hojas);
   - texturas deduplicadas por contenido dentro de cada pack;
@@ -61,9 +61,8 @@ PAQUETES = [
     ("animaciones2", "Universal Animation Library 2[Standard]", "Universal Animation Library 2", "universal-animation-library-2", ["Unreal-Godot"], []),
 ]
 
-TEX_MAX = 1024
-TEX_MIN = 512
-JPEG_CALIDAD = 87
+TEX_MAX = 2048
+JPEG_CALIDAD = 92
 
 # ───────────────────────────── categorías ─────────────────────────────
 
@@ -308,16 +307,6 @@ def reducir(im, alpha):
     escala = min(1.0, TEX_MAX / max(w, h))
     if escala < 1.0:
         im = im.resize((max(1, round(w * escala)), max(1, round(h * escala))), Image.LANCZOS)
-    # ¿Basta con 512? Si al bajar y volver a subir apenas cambia, sí.
-    w, h = im.size
-    if max(w, h) > TEX_MIN:
-        e = TEX_MIN / max(w, h)
-        small = im.resize((max(1, round(w * e)), max(1, round(h * e))), Image.LANCZOS)
-        back = small.resize((w, h), Image.BILINEAR)
-        diff = ImageChops.difference(im.convert("RGB"), back.convert("RGB"))
-        rms = math.sqrt(sum(v * v for v in ImageStat.Stat(diff).rms) / 3)
-        if rms < 1.0:
-            im = small
     return im
 
 
@@ -358,7 +347,7 @@ class Texturas:
         else:
             rgb = reducir(im.convert("RGB"), False)
             fn = nombre + ".jpg"
-            rgb.save(os.path.join(self.dir, fn), quality=JPEG_CALIDAD, optimize=True, progressive=False, subsampling="4:2:0")
+            rgb.save(os.path.join(self.dir, fn), quality=JPEG_CALIDAD, optimize=True, progressive=False, subsampling="4:4:4")
         self.bytes += os.path.getsize(os.path.join(self.dir, fn))
         self.por_hash[key] = fn
         return fn

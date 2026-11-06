@@ -91,7 +91,7 @@ Los packs originales ocupan ~1,2 GB; la biblioteca ocupa ~72 MB:
 
 - Solo glTF/GLB (sin FBX ni OBJ). Por modelo, un `.glb` con la geometría que
   referencia texturas compartidas del pack (`<pack>/texturas/`).
-- Solo la textura de color base (sin normales ni rugosidad), a 1024 px como
+- Solo la textura de color base (sin normales ni rugosidad), a 2048 px como
   máximo (512 si no pierde detalle). JPEG salvo las que tienen alfa (PNG con
   los bordes transparentes rellenados para que el filtrado no oscurezca las
   hojas). Texturas deduplicadas por contenido dentro de cada pack.

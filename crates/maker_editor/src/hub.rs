@@ -50,6 +50,7 @@ pub struct Hub {
     pub demo: bool,
     pub open_path: String,
     pub error: Option<String>,
+    logo: Option<egui::TextureHandle>,
 }
 
 impl Hub {
@@ -63,7 +64,20 @@ impl Hub {
             demo: true,
             open_path: String::new(),
             error: None,
+            logo: None,
         }
+    }
+
+    /// Logo de Maker (assets/logo/maker-logo-black.png), embebido en el binario.
+    fn logo(&mut self, ctx: &egui::Context) -> egui::TextureHandle {
+        self.logo
+            .get_or_insert_with(|| {
+                let img = image::load_from_memory(include_bytes!("../../../assets/logo/maker-logo-black.png")).expect("logo PNG válido").to_rgba8();
+                let size = [img.width() as usize, img.height() as usize];
+                let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+                ctx.load_texture("maker-logo", color, egui::TextureOptions::LINEAR)
+            })
+            .clone()
     }
 
     /// Dibuja el hub. Devuelve el proyecto a abrir.
@@ -71,9 +85,11 @@ impl Hub {
         let mut open = None;
         egui::CentralPanel::default_margins().show(ui, |ui| {
             ui.add_space(28.0);
+            let logo = self.logo(ui.ctx());
             ui.vertical_centered(|ui| {
-                ui.label(RichText::new("Maker Studio").size(30.0).strong().color(theme::TEXT1));
-                ui.label(RichText::new("Motor 3D en Rust · scripting en Rust · ECS · física · PBR").color(theme::TEXT3));
+                let w = 340.0;
+                let h = w * logo.size()[1] as f32 / logo.size()[0] as f32;
+                ui.add(egui::Image::new((logo.id(), egui::vec2(w, h))));
             });
             ui.add_space(22.0);
             let width = ui.available_width().min(980.0);
@@ -172,14 +188,9 @@ impl Hub {
                                 ui.add_space(6.0);
                                 ui.colored_label(theme::RED, e);
                             }
-                            ui.add_space(16.0);
-                            ui.label(RichText::new("Los scripts de cada proyecto son un crate de Rust (scripts/) que el editor compila con cargo y recarga en caliente.").small().color(theme::TEXT3));
                         });
                     });
                 });
-            });
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-                ui.label(RichText::new(format!("Maker Studio {} · MIT · EvilRender23", env!("CARGO_PKG_VERSION"))).small().color(theme::TEXT4));
             });
         });
         if let Some(p) = &open {

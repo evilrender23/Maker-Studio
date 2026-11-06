@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo/maker-logo-black.png" alt="Maker" width="420">
+</p>
+
 # Maker Studio
 
 Motor 3D con editor, hecho en **Rust** y con **scripting en Rust**. Toma las

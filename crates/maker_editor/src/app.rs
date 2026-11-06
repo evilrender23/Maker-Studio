@@ -167,7 +167,7 @@ impl MakerApp {
         }
         ctx.request_repaint();
         let building = self.ed.as_ref().is_some_and(|e| e.build.is_some());
-        let agente_ocupado = self.agente.as_ref().is_some_and(|g| g.ocupado());
+        let agente_ocupado = self.agente.as_ref().is_some_and(|g| g.ocupado() || g.midiendo());
         a.agent_idle = if agente_ocupado || building { 0 } else { a.agent_idle + 1 };
         let agente_listo = !a.agent.activo() || (a.frame > 3 && a.agent_idle > 20);
         if a.frame >= a.frames.max(30) && !a.shot_requested && !building && agente_listo {
@@ -256,6 +256,7 @@ impl eframe::App for MakerApp {
         if ed.frame_times.len() > 60 {
             ed.frame_times.remove(0);
         }
+        ed.auto_build = self.prefs.compilar_auto;
         ed.tick(dt);
         shortcuts(ed, &ctx);
 

@@ -41,8 +41,11 @@ pub struct Preferencias {
     pub permisos: Permisos,
     /// Porcentaje de contexto a partir del que se compacta solo (0 = nunca).
     pub auto_compactar: u8,
-    /// Compilar los scripts cuando el agente cambia `scripts/src`.
+    /// Compilar los scripts cuando el agente cambia `scripts/src` (sin compilación automática).
     pub recompilar: bool,
+    /// Compilar y recargar los scripts en cuanto cambian sus fuentes.
+    #[serde(default = "si")]
+    pub compilar_auto: bool,
     /// Panel del agente visible.
     pub panel_agente: bool,
 }
@@ -58,6 +61,7 @@ impl Default for Preferencias {
             permisos: Permisos::Edicion,
             auto_compactar: 85,
             recompilar: true,
+            compilar_auto: true,
             panel_agente: true,
         }
     }
@@ -108,15 +112,19 @@ pub fn selector_modelo(ui: &mut egui::Ui, id: impl std::hash::Hash + std::fmt::D
     let conocido = modelo.is_empty() || info.modelos.iter().any(|m| m.id == *modelo);
     let mut otro = !conocido || (modelo.is_empty() && ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(false));
     let mut cambio = false;
+    // El que usa la CLI por su cuenta, si lo dice (Claude: «Opus 5.5»).
+    let predeterminado = info.modelo_defecto.as_ref().map(|m| format!("Predeterminado ({m})")).unwrap_or_else(|| "Predeterminado".into());
     let texto = if otro {
         "Otro…".to_string()
     } else if modelo.is_empty() {
-        "Predeterminado".into()
+        predeterminado.clone()
     } else {
         info.modelos.iter().find(|m| m.id == *modelo).map(|m| m.nombre.clone()).unwrap_or(modelo.clone())
     };
-    egui::ComboBox::from_id_salt(id).selected_text(texto).width(ancho).show_ui(ui, |ui| {
-        if ui.selectable_label(!otro && modelo.is_empty(), "Predeterminado").clicked() {
+    // Los nombres cortos («Predeterminado», «opus») enteros; los largos se recortan con «…» al ancho.
+    let ajuste = if texto.chars().count() > 16 { egui::TextWrapMode::Truncate } else { egui::TextWrapMode::Extend };
+    egui::ComboBox::from_id_salt(id).selected_text(texto).width(ancho).wrap_mode(ajuste).show_ui(ui, |ui| {
+        if ui.selectable_label(!otro && modelo.is_empty(), &predeterminado).clicked() {
             modelo.clear();
             otro = false;
             cambio = true;
@@ -146,7 +154,8 @@ pub fn selector_modelo(ui: &mut egui::Ui, id: impl std::hash::Hash + std::fmt::D
 pub fn selector_esfuerzo(ui: &mut egui::Ui, id: impl std::hash::Hash + std::fmt::Debug, b: Backend, modelo: &str, esfuerzo: &mut String, catalogo: &Catalogo, ancho: f32) -> bool {
     let validos = catalogo.esfuerzos(b, modelo);
     let mut cambio = false;
-    if !esfuerzo.is_empty() && !validos.contains(esfuerzo) {
+    // Solo se descarta si la CLI ya dijo qué acepta (mientras se detecta, la lista está vacía).
+    if !esfuerzo.is_empty() && !validos.is_empty() && !validos.contains(esfuerzo) {
         esfuerzo.clear();
         cambio = true;
     }
@@ -201,6 +210,8 @@ pub fn ventana(ctx: &egui::Context, abierta: &mut bool, p: &mut Preferencias, ca
             {
                 crate::update::cambiar_automatico(auto);
             }
+            ui.checkbox(&mut p.compilar_auto, "Compilar scripts automáticamente")
+                .on_hover_text("Al guardar un script, o cuando cambia cualquier archivo de scripts/, se compila y se recarga en caliente");
             ui.add_space(8.0);
             section_label(ui, "Modo agente");
             if ui.checkbox(&mut p.modo_agente, "Modo agente").on_hover_text("Panel para trabajar con Claude Code, Codex o Antigravity sobre el proyecto").changed() && p.modo_agente {
@@ -234,9 +245,11 @@ pub fn ventana(ctx: &egui::Context, abierta: &mut bool, p: &mut Preferencias, ca
                     }
                 });
                 ui.end_row();
-                ui.label("");
-                ui.checkbox(&mut p.recompilar, "Recompilar scripts tras cambios del agente");
-                ui.end_row();
+                if !p.compilar_auto {
+                    ui.label("");
+                    ui.checkbox(&mut p.recompilar, "Recompilar scripts tras cambios del agente");
+                    ui.end_row();
+                }
             });
             for b in Backend::TODOS {
                 ui.add_space(8.0);
@@ -306,4 +319,8 @@ mod tests {
         let r: Preferencias = serde_json::from_str(&serde_json::to_string(&q).unwrap()).unwrap();
         assert_eq!(r, q);
     }
+}
+
+fn si() -> bool {
+    true
 }

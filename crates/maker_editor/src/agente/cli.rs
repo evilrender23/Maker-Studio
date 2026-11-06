@@ -51,24 +51,6 @@ impl Backend {
         Backend::TODOS.into_iter().find(|b| b.clave() == s || b.nombre().eq_ignore_ascii_case(s))
     }
 
-    /// Esfuerzos que acepta la CLI (para Codex dependen del modelo: ver `Catalogo`).
-    pub fn esfuerzos(self) -> &'static [&'static str] {
-        match self {
-            Backend::Claude | Backend::Antigravity => &["low", "medium", "high", "xhigh", "max"],
-            Backend::Codex => &["low", "medium", "high", "xhigh", "max", "ultra"],
-        }
-    }
-
-    /// Ventana de contexto supuesta cuando la CLI no la informa.
-    pub fn ventana_por_defecto(self, modelo: &str) -> u64 {
-        let m = modelo.to_ascii_lowercase();
-        match self {
-            Backend::Claude => 200_000,
-            Backend::Codex => 272_000,
-            Backend::Antigravity if m.starts_with("claude") || m.starts_with("gpt") => 200_000,
-            Backend::Antigravity => 1_000_000,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -249,8 +231,12 @@ fn salida_corta(mut c: Command, limite: Duration) -> Option<String> {
 pub struct InfoCli {
     pub ruta: Option<PathBuf>,
     pub version: Option<String>,
-    /// Modelos descubiertos: (id, nombre visible, ventana, esfuerzos válidos).
+    /// Modelos que lista la propia CLI.
     pub modelos: Vec<Modelo>,
+    /// Modelo que usa la CLI si no se elige ninguno (si lo dice).
+    pub modelo_defecto: Option<String>,
+    /// Esfuerzos que acepta la CLI según su `--help` (Codex los da por modelo).
+    pub esfuerzos: Vec<String>,
     pub comprobado: bool,
 }
 
@@ -258,6 +244,7 @@ pub struct InfoCli {
 pub struct Modelo {
     pub id: String,
     pub nombre: String,
+    /// Ventana de contexto utilizable que informa la CLI.
     pub ventana: Option<u64>,
     pub esfuerzos: Vec<String>,
 }
@@ -296,11 +283,22 @@ impl Catalogo {
         {
             return m.esfuerzos.clone();
         }
-        b.esfuerzos().iter().map(|s| s.to_string()).collect()
+        if !info.esfuerzos.is_empty() {
+            return info.esfuerzos;
+        }
+        // Codex sin modelo elegido: los que acepta alguno de sus modelos, en su orden.
+        let mut v: Vec<String> = Vec::new();
+        for e in info.modelos.iter().flat_map(|m| m.esfuerzos.iter()) {
+            if !v.contains(e) {
+                v.push(e.clone());
+            }
+        }
+        v
     }
 
-    pub fn ventana(&self, b: Backend, modelo: &str) -> u64 {
-        self.info(b).modelos.iter().find(|m| m.id == modelo).and_then(|m| m.ventana).unwrap_or_else(|| b.ventana_por_defecto(modelo))
+    /// Ventana que informa la CLI para ese modelo, si la informa sin gastar un turno.
+    pub fn ventana(&self, b: Backend, modelo: &str) -> Option<u64> {
+        self.info(b).modelos.iter().find(|m| m.id == modelo).and_then(|m| m.ventana)
     }
 }
 
@@ -309,20 +307,137 @@ fn detectar_una(b: Backend, personal: &str) -> InfoCli {
     let mut c = orden(&ruta);
     c.arg("--version");
     let version = salida_corta(c, Duration::from_secs(20)).map(|s| s.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string()).filter(|s| !s.is_empty());
-    let modelos = match b {
-        Backend::Claude => ["opus", "sonnet", "haiku"].iter().map(|m| Modelo { id: m.to_string(), nombre: m.to_string(), ..Default::default() }).collect(),
+    let mut c = orden(&ruta);
+    c.arg("--help");
+    let esfuerzos = salida_corta(c, Duration::from_secs(20)).map(|s| esfuerzos_de_ayuda(&s)).unwrap_or_default();
+    let (modelos, modelo_defecto) = match b {
+        Backend::Claude => {
+            // `/model` es un comando local: no llama al modelo ni gasta tokens.
+            salida_corta(orden_comando_claude(&ruta, "/model", "", None), Duration::from_secs(30)).and_then(|s| resultado_json(&s)).map(|t| modelos_claude(&t)).unwrap_or_default()
+        }
         Backend::Codex => {
             let mut c = orden(&ruta);
             c.args(["debug", "models"]);
-            salida_corta(c, Duration::from_secs(30)).map(|s| modelos_codex(&s)).unwrap_or_default()
+            (salida_corta(c, Duration::from_secs(30)).map(|s| modelos_codex(&s)).unwrap_or_default(), None)
         }
         Backend::Antigravity => {
             let mut c = orden(&ruta);
             c.arg("models");
-            salida_corta(c, Duration::from_secs(60)).map(|s| modelos_agy(&s)).unwrap_or_default()
+            (salida_corta(c, Duration::from_secs(60)).map(|s| modelos_agy(&s)).unwrap_or_default(), None)
         }
     };
-    InfoCli { ruta: Some(ruta), version, modelos, comprobado: true }
+    InfoCli { ruta: Some(ruta), version, modelos, modelo_defecto, esfuerzos, comprobado: true }
+}
+
+/// Valores de `--effort` en la ayuda: `(low, medium, high)` (Claude) o `(low|medium|high)` (agy).
+pub fn esfuerzos_de_ayuda(ayuda: &str) -> Vec<String> {
+    let Some(i) = ayuda.find("--effort") else { return Vec::new() };
+    let resto = &ayuda[i..];
+    let fin = resto[2..].find("\n  -").map(|f| f + 2).unwrap_or(resto.len());
+    let bloque = &resto[..fin];
+    let (Some(a), Some(z)) = (bloque.find('('), bloque.find(')')) else { return Vec::new() };
+    if z <= a {
+        return Vec::new();
+    }
+    bloque[a + 1..z].split([',', '|']).map(|s| s.trim().to_string()).filter(|s| !s.is_empty() && !s.contains(' ')).collect()
+}
+
+/// `claude -p --output-format json` con un comando local (`/model`, `/context`) por stdin.
+fn orden_comando_claude(exe: &Path, comando: &str, modelo: &str, reanudar: Option<&str>) -> Command {
+    let mut c = orden(exe);
+    c.args(["-p", "--output-format", "json"]);
+    if !modelo.is_empty() {
+        c.args(["--model", modelo]);
+    }
+    if let Some(id) = reanudar {
+        c.args(["--resume", id]);
+    }
+    c.arg(comando);
+    c
+}
+
+/// El campo `result` de una respuesta `--output-format json`.
+fn resultado_json(s: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(s.trim()).ok()?["result"].as_str().map(String::from)
+}
+
+/// Salida de `/model`: «Current model: `Opus 5.5 (default)`» y «Available: sonnet, opus, …, or a full model ID.».
+pub fn modelos_claude(t: &str) -> (Vec<Modelo>, Option<String>) {
+    let defecto = t.split("Current model:").nth(1).and_then(|r| r.split('`').nth(1)).map(|m| m.trim_end_matches(" (default)").trim().to_string()).filter(|m| !m.is_empty());
+    let lista = t.split("Available:").nth(1).map(|r| r.split(['\n', '.']).next().unwrap_or("")).unwrap_or("");
+    let modelos = lista
+        .split(',')
+        .map(|m| m.trim().trim_start_matches("or ").trim())
+        .filter(|m| !m.is_empty() && !m.contains(' ') && *m != "default")
+        .map(|m| Modelo { id: m.into(), nombre: m.into(), ..Default::default() })
+        .collect();
+    (modelos, defecto)
+}
+
+/// Contexto ocupado y ventana de una conversación, medidos por la propia CLI.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Medida {
+    pub usado: Option<u64>,
+    pub ventana: Option<u64>,
+}
+
+/// «**Tokens:** 15.4k / 1m (2%)» de `/context`.
+pub fn medida_claude(t: &str) -> Option<Medida> {
+    let r = t.split("Tokens:").nth(1)?.trim_start_matches(['*', ' ']);
+    let linea = r.lines().next()?;
+    let (a, b) = linea.split_once('/')?;
+    let b = b.trim().split_whitespace().next()?;
+    Some(Medida { usado: cantidad(a.trim()), ventana: cantidad(b) })
+}
+
+/// «15.4k» → 15400, «1m» → 1000000, «870» → 870.
+fn cantidad(s: &str) -> Option<u64> {
+    let s = s.trim().to_ascii_lowercase();
+    let (num, mult) = match s.chars().last()? {
+        'k' => (&s[..s.len() - 1], 1e3),
+        'm' => (&s[..s.len() - 1], 1e6),
+        _ => (&s[..], 1.0),
+    };
+    num.parse::<f64>().ok().map(|n| (n * mult).round() as u64)
+}
+
+/// Último `token_count` del registro de la conversación de Codex (`~/.codex/sessions/**/rollout-*-<id>.jsonl`):
+/// tokens de la última llamada y la ventana del modelo, tal como los calcula Codex.
+pub fn medida_codex(id: &str) -> Option<Medida> {
+    let home = std::env::var_os("CODEX_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(|h| PathBuf::from(h).join(".codex")))?;
+    let mut pendientes = vec![home.join("sessions")];
+    let mut hallado = None;
+    while let Some(d) = pendientes.pop() {
+        for e in std::fs::read_dir(&d).ok()?.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                pendientes.push(p);
+            } else if p.file_name().is_some_and(|n| n.to_string_lossy().ends_with(&format!("{id}.jsonl"))) {
+                hallado = Some(p);
+            }
+        }
+    }
+    medida_codex_texto(&std::fs::read_to_string(hallado?).ok()?)
+}
+
+pub fn medida_codex_texto(registro: &str) -> Option<Medida> {
+    registro.lines().rev().filter(|l| l.contains("\"token_count\"")).find_map(|l| {
+        let v: serde_json::Value = serde_json::from_str(l).ok()?;
+        let info = &v["payload"]["info"];
+        let usado = info["last_token_usage"]["total_tokens"].as_u64();
+        let ventana = info["model_context_window"].as_u64();
+        (usado.is_some() || ventana.is_some()).then_some(Medida { usado, ventana })
+    })
+}
+
+/// Mide el contexto real de una conversación (o del modelo, si aún no hay conversación).
+/// Claude: `/context` (local, sin coste). Codex: su registro de sesión. Antigravity no lo expone.
+pub fn medir(b: Backend, exe: &Path, modelo: &str, reanudar: Option<&str>) -> Option<Medida> {
+    match b {
+        Backend::Claude => salida_corta(orden_comando_claude(exe, "/context", modelo, reanudar), Duration::from_secs(30)).and_then(|s| resultado_json(&s)).and_then(|t| medida_claude(&t)),
+        Backend::Codex => medida_codex(reanudar?),
+        Backend::Antigravity => None,
+    }
 }
 
 /// `codex debug models`: JSON con `models[{slug, display_name, visibility, context_window, supported_reasoning_levels}]`.
@@ -337,7 +452,8 @@ pub fn modelos_codex(json: &str) -> Vec<Modelo> {
             let id = m["slug"].as_str()?.to_string();
             Some(Modelo {
                 nombre: m["display_name"].as_str().unwrap_or(&id).to_string(),
-                ventana: m["context_window"].as_u64(),
+                // Lo que Codex considera utilizable (lo mismo que escribe como `model_context_window`).
+                ventana: m["context_window"].as_u64().map(|v| v * m["effective_context_window_percent"].as_u64().unwrap_or(100) / 100),
                 esfuerzos: m["supported_reasoning_levels"].as_array().into_iter().flatten().filter_map(|e| e["effort"].as_str().map(String::from)).collect(),
                 id,
             })
@@ -586,10 +702,32 @@ mod tests {
         let j = r#"{"models":[{"slug":"gpt-6-sol","display_name":"GPT-6 Sol","visibility":"list","context_window":272000,"supported_reasoning_levels":[{"effort":"low","description":"x"},{"effort":"high","description":"y"}]},{"slug":"oculto","visibility":"hide"}]}"#;
         let m = modelos_codex(j);
         assert_eq!(m.len(), 1);
-        assert_eq!(m[0].ventana, Some(272000));
+        assert_eq!(m[0].ventana, Some(272000), "sin effective_context_window_percent, la ventana entera");
         assert_eq!(m[0].esfuerzos, vec!["low", "high"]);
         let a = modelos_agy("Fetching available models...\ngemini-3.8-flash-high\tGemini 3.8 Flash (High)\nclaude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)\n");
         assert_eq!(a.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["gemini-3.8-flash-high", "claude-sonnet-4-6"]);
-        assert_eq!(Backend::Antigravity.ventana_por_defecto("gemini-3.8-flash-low"), 1_000_000);
+    }
+
+    // Salidas reales de las CLIs guardadas en `fixtures/` (claude 2.1.316, agy 1.5.1, codex 0.166.0).
+    #[test]
+    fn datos_reales_de_las_clis() {
+        let (modelos, defecto) = modelos_claude(include_str!("fixtures/claude_model.txt"));
+        assert_eq!(defecto.as_deref(), Some("Opus 5.5"));
+        let ids: Vec<&str> = modelos.iter().map(|m| m.id.as_str()).collect();
+        assert!(ids.contains(&"opus") && ids.contains(&"opus[1m]") && ids.contains(&"haiku"), "{ids:?}");
+        assert!(!ids.contains(&"default") && !ids.iter().any(|i| i.contains(' ')), "{ids:?}");
+
+        let m = medida_claude(include_str!("fixtures/claude_context.txt")).unwrap();
+        assert_eq!(m.ventana, Some(1_000_000));
+        assert!(m.usado.unwrap() > 1_000);
+
+        assert_eq!(esfuerzos_de_ayuda(include_str!("fixtures/claude_help_effort.txt")), ["low", "medium", "high", "xhigh", "max"]);
+        assert_eq!(esfuerzos_de_ayuda(include_str!("fixtures/agy_help_effort.txt")), ["low", "medium", "high", "xhigh", "max"]);
+        assert!(esfuerzos_de_ayuda("--model <m>  sin esfuerzo").is_empty());
+
+        let c = medida_codex_texto(include_str!("fixtures/codex_token_count.jsonl")).unwrap();
+        assert_eq!(c.ventana, Some(475_000));
+        assert_eq!(c.usado, Some(14_983));
+        assert_eq!(medida_claude("sin tokens"), None);
     }
 }

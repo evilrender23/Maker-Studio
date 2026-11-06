@@ -707,6 +707,11 @@ impl SceneRenderer {
         self.targets.as_ref().map(|t| t.size).unwrap_or((0, 0))
     }
 
+    /// Dispositivo y cola de la GPU (para crear otro renderizador que los comparta).
+    pub fn gpu(&self) -> (&wgpu::Device, &wgpu::Queue) {
+        (&self.device, &self.queue)
+    }
+
     pub fn resize(&mut self, w: u32, h: u32) {
         let (w, h) = (w.clamp(1, 8192), h.clamp(1, 8192));
         if self.targets.as_ref().is_some_and(|t| t.size == (w, h)) {

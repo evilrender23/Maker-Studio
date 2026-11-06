@@ -1,0 +1,4 @@
+# Atajos: `cargo t` pruebas (perfil dev, incremental), `cargo r` editor en perfil rapido.
+[alias]
+t = "test --workspace"
+r = "build --profile rapido -p maker_editor -p maker_player"

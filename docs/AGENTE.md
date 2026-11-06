@@ -73,8 +73,9 @@ Las CLIs nunca preguntan nada durante un turno: lo que el nivel no permite, se d
 - **CLI, Modelo, Esfuerzo, Permisos**: valen para el siguiente mensaje. La CLI solo se puede
   cambiar antes del primer mensaje de la sesión; las CLIs que no se encuentran salen
   desactivadas.
-- **Medidor de contexto**: tokens ocupados frente a la ventana del modelo (Codex y Claude la
-  informan; si no, se supone 200 k para Claude y 1 M para Gemini). **Compactar** la reduce:
+- **Medidor de contexto**: tokens ocupados frente a la ventana real del modelo, medida por la
+  propia CLI (Claude: `/context`, sin coste; Codex: su registro de sesión). Antigravity no la
+  informa: solo se muestran los tokens. **Compactar** la reduce:
   - Claude Code: su `/compact` nativo sobre la misma conversación.
   - Codex y Antigravity: se pide un resumen y el siguiente mensaje abre una conversación
     nueva que empieza con ese resumen.

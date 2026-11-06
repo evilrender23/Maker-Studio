@@ -10,7 +10,7 @@ pub mod sesion;
 
 use crate::editor::Editor;
 use crate::prefs::Preferencias;
-use cli::{Backend, Catalogo, Ejecucion, Peticion};
+use cli::{Backend, Catalogo, Ejecucion, Medida, Peticion};
 use contexto::Chip;
 use eventos::Evento;
 use maker_engine::log;
@@ -80,6 +80,10 @@ pub struct Agente {
     pub turnos_terminados: u32,
     /// Compactar en cuanto termine el turno en curso.
     compactar_luego: bool,
+    /// Medición del contexto real en curso: (para qué se pidió, respuesta).
+    medicion: Option<(String, std::sync::mpsc::Receiver<Option<Medida>>)>,
+    /// Qué se midió por última vez (CLI, modelo, conversación, turnos): al cambiar, se vuelve a medir.
+    medido: String,
 }
 
 impl Agente {
@@ -96,6 +100,8 @@ impl Agente {
             ctx: ctx.clone(),
             turnos_terminados: 0,
             compactar_luego: false,
+            medicion: None,
+            medido: String::new(),
         };
         if a.sesiones.is_empty() {
             a.nueva_sesion(prefs);
@@ -113,6 +119,11 @@ impl Agente {
 
     pub fn ocupado(&self) -> bool {
         self.turno.is_some()
+    }
+
+    /// Midiendo el contexto real (para que las capturas automáticas esperen).
+    pub fn midiendo(&self) -> bool {
+        self.medicion.is_some()
     }
 
     pub fn nueva_sesion(&mut self, prefs: &Preferencias) {
@@ -166,9 +177,64 @@ impl Agente {
         s.contexto_enviado = false;
     }
 
-    pub fn ventana(&self) -> u64 {
+    /// Ventana real: la medida para esta conversación o la que la CLI informa del modelo. `None` si
+    /// la CLI no la da (Antigravity): no se inventa.
+    pub fn ventana(&self) -> Option<u64> {
         let s = self.sesion();
-        if s.uso.ventana > 0 { s.uso.ventana } else { self.catalogo.ventana(s.backend, &s.modelo) }
+        if s.uso.ventana > 0 { Some(s.uso.ventana) } else { self.catalogo.ventana(s.backend, &s.modelo) }
+    }
+
+    /// Pide a la CLI el contexto real cuando cambia la CLI, el modelo, la conversación o acaba un
+    /// turno. En segundo plano; se aplica en `medir_poll`.
+    fn medir_si_cambio(&mut self, prefs: &Preferencias) {
+        if self.turno.is_some() || self.medicion.is_some() {
+            return;
+        }
+        let s = self.sesion();
+        let clave = format!("{:?}|{}|{:?}|{}|{}", s.backend, s.modelo, s.id_nativo, s.id, self.turnos_terminados);
+        if clave == self.medido {
+            return;
+        }
+        let modelo_cambio = !self.medido.starts_with(&format!("{:?}|{}|", s.backend, s.modelo));
+        let (b, modelo, id) = (s.backend, s.modelo.clone(), s.id_nativo.clone());
+        self.medido = clave.clone();
+        if modelo_cambio {
+            // Lo medido era de otra CLI u otro modelo.
+            let s = self.sesion_mut();
+            s.uso.ventana = 0;
+            if s.id_nativo.is_none() {
+                s.uso.contexto = 0;
+            }
+        }
+        let Ok(exe) = self.exe(prefs, b) else { return };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = self.ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(cli::medir(b, &exe, &modelo, id.as_deref()));
+            ctx.request_repaint();
+        });
+        self.medicion = Some((clave, rx));
+    }
+
+    fn medir_poll(&mut self) {
+        let Some((clave, rx)) = &self.medicion else { return };
+        let Ok(m) = rx.try_recv() else { return };
+        let clave = clave.clone();
+        self.medicion = None;
+        let Some(m) = m else { return };
+        // Si entretanto cambió la CLI, el modelo o la conversación, la medida ya no vale.
+        if clave != self.medido {
+            return;
+        }
+        {
+            let s = self.sesion_mut();
+            if let Some(v) = m.ventana {
+                s.uso.ventana = v;
+            }
+            if let Some(u) = m.usado {
+                s.uso.contexto = u;
+            }
+        }
     }
 
     fn exe(&self, prefs: &Preferencias, b: Backend) -> Result<PathBuf, String> {
@@ -271,6 +337,8 @@ impl Agente {
 
     /// Procesa los eventos pendientes; al terminar un turno integra los cambios en el editor.
     pub fn actualizar(&mut self, ed: &mut Editor, prefs: &Preferencias) {
+        self.medir_poll();
+        self.medir_si_cambio(prefs);
         let Some(t) = &mut self.turno else { return };
         let Some(idx) = self.sesiones.iter().position(|s| s.id == t.sesion) else {
             self.turno = None;
@@ -329,7 +397,7 @@ impl Agente {
             Clase::Normal => {}
         }
         s.actualizada = sesion::ahora();
-        let (contexto, ventana) = (s.uso.contexto, if s.uso.ventana > 0 { s.uso.ventana } else { self.catalogo.ventana(s.backend, &s.modelo) });
+        let (contexto, ventana) = (s.uso.contexto, if s.uso.ventana > 0 { s.uso.ventana } else { self.catalogo.ventana(s.backend, &s.modelo).unwrap_or(0) });
         let secs = t.ej.inicio.elapsed().as_secs_f32();
         let herramientas = t.herramientas;
         self.actual = idx;
@@ -398,7 +466,8 @@ impl Agente {
         // Scripts: compilar y recargar en caliente.
         let src = ed.project.scripts_dir().join("src");
         let scripts = cambios.iter().any(|p| p.starts_with(&src));
-        if scripts && prefs.recompilar {
+        // Con la compilación automática activada, ya compila el editor al ver el cambio.
+        if scripts && prefs.recompilar && !prefs.compilar_auto {
             if script_sucio_cambiado {
                 log::warn("agente", "no se recompila: guardar el script abierto pisaría los cambios del agente");
             } else {
@@ -432,7 +501,8 @@ pub fn imprimir_sesion(g: &Agente) {
             Mensaje::Nota { texto } => println!("  [nota] {}", corto(texto)),
         }
     }
-    println!("agente: contexto {} / {} · entrada {} · salida {} · coste {:.5} $", s.uso.contexto, g.ventana(), s.uso.entrada, s.uso.salida, s.uso.coste);
+    let ventana = g.ventana().map(|v| v.to_string()).unwrap_or_else(|| "?".into());
+    println!("agente: contexto {} / {ventana} · entrada {} · salida {} · coste {:.5} $", s.uso.contexto, s.uso.entrada, s.uso.salida, s.uso.coste);
 }
 
 fn recortar_salida(mut s: String) -> String {

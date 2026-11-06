@@ -141,6 +141,12 @@ pub struct Editor {
     pub status: String,
     pub frame_times: Vec<f32>,
     pub last_lib_check: Instant,
+    /// Compilar solos los scripts cuando cambian sus fuentes (Preferencias).
+    pub auto_build: bool,
+    /// Huella de `scripts/src` + `Cargo.toml` de la última compilación (o de la apertura).
+    src_huella: Option<u64>,
+    /// Comprobar las fuentes en el siguiente fotograma (p. ej. al guardar un script).
+    comprobar_fuentes: bool,
     pub new_script_name: String,
     pub import_path: String,
     pub pending_reload_after_play: bool,
@@ -199,6 +205,9 @@ impl Editor {
             status: String::new(),
             frame_times: Vec::new(),
             last_lib_check: Instant::now(),
+            auto_build: true,
+            src_huella: None,
+            comprobar_fuentes: true,
             new_script_name: String::new(),
             import_path: String::new(),
             pending_reload_after_play: false,
@@ -454,9 +463,37 @@ impl Editor {
         }
         self.input.end_frame();
         self.poll_build();
-        if self.last_lib_check.elapsed() > Duration::from_secs(1) {
+        if self.comprobar_fuentes || self.last_lib_check.elapsed() > Duration::from_secs(1) {
+            self.comprobar_fuentes = false;
             self.last_lib_check = Instant::now();
+            self.auto_build_check();
             self.check_lib_changed();
+        }
+    }
+
+    /// Compilación automática: si las fuentes de los scripts cambiaron desde la última compilación
+    /// (al guardar, o por el agente o un editor externo), compila y recarga en caliente. Al abrir el
+    /// proyecto también compila si las fuentes son más nuevas que la biblioteca (o no existe).
+    fn auto_build_check(&mut self) {
+        if !self.auto_build || self.build.is_some() {
+            return;
+        }
+        let dir = self.project.scripts_dir();
+        if !dir.join("Cargo.toml").exists() {
+            return;
+        }
+        let (huella, mas_nueva) = huella_fuentes(&dir);
+        match self.src_huella {
+            None => {
+                self.src_huella = Some(huella);
+                let lib = self.lib_file_mtime();
+                if lib.is_none() || mas_nueva.zip(lib).is_some_and(|(f, l)| f > l) {
+                    log::info("scripts", "las fuentes son más nuevas que la biblioteca: compilando");
+                    self.start_build(false);
+                }
+            }
+            Some(h) if h != huella => self.start_build(false),
+            _ => {}
         }
     }
 
@@ -509,15 +546,23 @@ impl Editor {
         }
     }
 
+    /// F7: guarda el script abierto y compila.
     pub fn build_scripts(&mut self) {
+        self.start_build(true);
+    }
+
+    fn start_build(&mut self, guardar: bool) {
         if self.build.is_some() {
             return;
         }
-        if let Some(s) = &self.script
+        if guardar
+            && let Some(s) = &self.script
             && s.text != s.saved
         {
             self.save_script();
         }
+        // Lo que cambie a partir de aquí provoca otra compilación cuando acabe esta.
+        self.src_huella = Some(huella_fuentes(&self.project.scripts_dir()).0);
         let child = match self.project.spawn_script_build() {
             Ok(c) => c,
             Err(e) => {
@@ -602,6 +647,7 @@ impl Editor {
             match std::fs::write(&s.path, &s.text) {
                 Ok(()) => {
                     s.saved = s.text.clone();
+                    self.comprobar_fuentes = true;
                     self.status = format!("Guardado {}", s.path.file_name().unwrap_or_default().to_string_lossy());
                 }
                 Err(e) => log::error("editor", format!("{}: {e}", s.path.display())),
@@ -740,5 +786,59 @@ mod tests {
         let (_, f) = u.redo().unwrap();
         assert!(Scene::from_file(&f).contains(a));
         assert!(u.can_redo());
+    }
+}
+
+/// Huella (rutas, tamaños y fechas) de `scripts/Cargo.toml` y de todo `scripts/src`, y la fecha
+/// del archivo más nuevo. Sin leer contenidos: cuesta microsegundos con decenas de archivos.
+pub fn huella_fuentes(scripts: &std::path::Path) -> (u64, Option<SystemTime>) {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut mas_nueva: Option<SystemTime> = None;
+    let mut pendientes = vec![scripts.join("src")];
+    let mut archivos = vec![scripts.join("Cargo.toml")];
+    while let Some(d) = pendientes.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                pendientes.push(p);
+            } else {
+                archivos.push(p);
+            }
+        }
+    }
+    archivos.sort();
+    for p in archivos {
+        if let Ok(m) = std::fs::metadata(&p) {
+            let t = m.modified().ok();
+            p.hash(&mut h);
+            m.len().hash(&mut h);
+            t.hash(&mut h);
+            mas_nueva = mas_nueva.max(t);
+        }
+    }
+    (h.finish(), mas_nueva)
+}
+
+#[cfg(test)]
+mod tests_auto_build {
+    use super::huella_fuentes;
+
+    #[test]
+    fn la_huella_cambia_al_editar_un_script() {
+        let d = std::env::temp_dir().join(format!("maker-huella-{}", std::process::id()));
+        std::fs::create_dir_all(d.join("src/sub")).unwrap();
+        std::fs::write(d.join("Cargo.toml"), "[package]").unwrap();
+        std::fs::write(d.join("src/lib.rs"), "fn a() {}").unwrap();
+        let (a, _) = huella_fuentes(&d);
+        assert_eq!(a, huella_fuentes(&d).0, "estable sin cambios");
+        std::fs::write(d.join("src/sub/otro.rs"), "x").unwrap();
+        let (b, nueva) = huella_fuentes(&d);
+        assert_ne!(a, b, "un archivo nuevo en una subcarpeta cuenta");
+        assert!(nueva.is_some());
+        std::fs::write(d.join("src/lib.rs"), "fn a() { 1; }").unwrap();
+        assert_ne!(b, huella_fuentes(&d).0, "editar cuenta");
+        let _ = std::fs::remove_dir_all(d);
     }
 }

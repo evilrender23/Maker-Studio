@@ -177,7 +177,8 @@ impl Interprete {
                 let u = &v["usage"];
                 let entrada = n(u, "input_tokens");
                 let salida = n(u, "output_tokens");
-                out.push(Evento::Uso(Uso { contexto: Some(entrada + salida), entrada: Some(entrada), salida: Some(salida), ..Default::default() }));
+                // El contexto ocupado lo da el registro de Codex (`cli::medida_codex`), no esta suma.
+                out.push(Evento::Uso(Uso { entrada: Some(entrada), salida: Some(salida), ..Default::default() }));
                 out.push(Evento::Fin { ok: true });
             }
             "turn.failed" => {
@@ -352,7 +353,7 @@ mod tests {
         assert!(ev.contains(&Evento::HerramientaFin { id: "item_2".into(), salida: "a.txt\n".into(), error: false }));
         assert_eq!(ev.iter().filter(|e| matches!(e, Evento::HerramientaInicio { .. })).count(), 3);
         assert!(textos(&ev).ends_with("hecho"));
-        assert!(ev.contains(&Evento::Uso(Uso { contexto: Some(29045 + 124), entrada: Some(29045), salida: Some(124), ..Default::default() })));
+        assert!(ev.contains(&Evento::Uso(Uso { entrada: Some(29045), salida: Some(124), ..Default::default() })));
         assert_eq!(ev.last(), Some(&Evento::Fin { ok: true }));
     }
 

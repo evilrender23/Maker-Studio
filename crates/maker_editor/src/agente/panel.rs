@@ -135,8 +135,8 @@ fn selectores(ag: &mut Agente, prefs: &Preferencias, ui: &mut Ui, ocupado: bool)
 
 fn medidor(ag: &mut Agente, ed: &Editor, prefs: &Preferencias, ui: &mut Ui, ocupado: bool) {
     let usado = ag.sesion().uso.contexto;
-    let ventana = ag.ventana().max(1);
-    let f = (usado as f32 / ventana as f32).clamp(0.0, 1.0);
+    let ventana = ag.ventana().filter(|v| *v > 0);
+    let f = ventana.map(|v| (usado as f32 / v as f32).clamp(0.0, 1.0)).unwrap_or(0.0);
     let umbral = prefs.auto_compactar as f32 / 100.0;
     let color = if umbral > 0.0 && f >= umbral { theme::ORANGE } else if f > 0.9 { theme::RED } else { theme::ACCENT };
     ui.horizontal(|ui| {
@@ -150,7 +150,11 @@ fn medidor(ag: &mut Agente, ed: &Editor, prefs: &Preferencias, ui: &mut Ui, ocup
             lleno.set_width((lleno.width() * f).max(2.0));
             p.rect_filled(lleno, CornerRadius::same(2), color.gamma_multiply(0.35));
         }
-        p.text(rect.center(), egui::Align2::CENTER_CENTER, format!("{} / {} tokens · {:.0} %", miles(usado), miles(ventana), f * 100.0), egui::FontId::proportional(11.0), theme::TEXT2);
+        let texto = match ventana {
+            Some(v) => format!("{} / {} tokens · {:.0} %", miles(usado), miles(v), f * 100.0),
+            None => format!("{} tokens", miles(usado)),
+        };
+        p.text(rect.center(), egui::Align2::CENTER_CENTER, texto, egui::FontId::proportional(11.0), theme::TEXT2);
         r.on_hover_text(if umbral > 0.0 { format!("Se compacta solo al {:.0} %", umbral * 100.0) } else { "Compactación automática desactivada".into() });
         let boton = ui.add_enabled(puede, egui::Button::new("Compactar").small());
         if boton.on_hover_text(if ag.sesion().backend == Backend::Claude { "/compact de Claude Code" } else { "Resumen y conversación nueva" }).clicked() {

@@ -29,6 +29,15 @@ pub enum Icon {
     Cerrar,
     Personaje,
     Biblioteca,
+    Ojo,
+    OjoCerrado,
+    // Para la pestaña Contenido con miniaturas (en curso).
+    #[allow(dead_code)]
+    Escena,
+    #[allow(dead_code)]
+    Script,
+    #[allow(dead_code)]
+    Archivo,
 }
 
 impl Icon {
@@ -52,6 +61,11 @@ impl Icon {
             Icon::Cerrar => &px::CERRAR,
             Icon::Personaje => &px::PERSONAJE,
             Icon::Biblioteca => &px::BIBLIOTECA,
+            Icon::Ojo => &px::OJO,
+            Icon::OjoCerrado => &px::OJO_CERRADO,
+            Icon::Escena => &px::ESCENA,
+            Icon::Script => &px::SCRIPT,
+            Icon::Archivo => &px::ARCHIVO,
         }
     }
 }

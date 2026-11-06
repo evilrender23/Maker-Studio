@@ -106,14 +106,16 @@ pub fn hierarchy(ed: &mut Editor, ui: &mut Ui) {
     let mut actions = Vec::new();
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         let filter = ed.hierarchy_filter.trim().to_lowercase();
+        ui.spacing_mut().item_spacing.y = 0.0;
         if filter.is_empty() {
-            for &r in &h.roots {
-                node(ed, ui, &h, r, &mut actions);
+            let n = h.roots.len();
+            for (i, &r) in h.roots.iter().enumerate() {
+                node(ed, ui, &h, r, &mut Vec::new(), i + 1 == n, &mut actions);
             }
         } else {
             for (id, _) in h.depth_first() {
                 if ed.scene.name(id).to_lowercase().contains(&filter) {
-                    row(ed, ui, id, &mut actions);
+                    row(ed, ui, id, &Guias::default(), &mut actions);
                 }
             }
         }
@@ -199,47 +201,117 @@ fn apply(ed: &mut Editor, a: HAction) {
     }
 }
 
-fn node(ed: &mut Editor, ui: &mut Ui, h: &Hierarchy, id: EntityId, actions: &mut Vec<HAction>) {
-    let children = h.children_of(id);
-    if children.is_empty() {
-        ui.horizontal(|ui| {
-            ui.add_space(ui.spacing().indent + 4.0);
-            row(ed, ui, id, actions);
-        });
-        return;
-    }
-    let cid = ui.make_persistent_id(("hier", id.0));
-    egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), cid, true)
-        .show_header(ui, |ui| row(ed, ui, id, actions))
-        .body(|ui| {
-            for &c in children {
-                node(ed, ui, h, c, actions);
-            }
-        });
+/// Alto de fila e indentación de la jerarquía (compacta, como Godot).
+const FILA: f32 = 22.0;
+const SANGRIA: f32 = 16.0;
+
+/// Dónde dibujar las líneas del árbol de una fila.
+#[derive(Default)]
+struct Guias {
+    /// Por cada antepasado: si aún le quedan hermanos debajo (sigue su línea vertical).
+    siguen: Vec<bool>,
+    /// Es el último de sus hermanos (la línea acaba en └).
+    ultimo: bool,
+    /// Tiene hijos: (desplegada).
+    hijos: Option<bool>,
 }
 
-fn row(ed: &mut Editor, ui: &mut Ui, id: EntityId, actions: &mut Vec<HAction>) {
+fn node(ed: &mut Editor, ui: &mut Ui, h: &Hierarchy, id: EntityId, siguen: &mut Vec<bool>, ultimo: bool, actions: &mut Vec<HAction>) {
+    let children = h.children_of(id);
+    let cid = ui.make_persistent_id(("hier-abierto", id.0));
+    let abierto = ui.data(|d| d.get_temp::<bool>(cid)).unwrap_or(true);
+    let guias = Guias { siguen: siguen.clone(), ultimo, hijos: (!children.is_empty()).then_some(abierto) };
+    if row(ed, ui, id, &guias, actions) {
+        ui.data_mut(|d| d.insert_temp(cid, !abierto));
+    }
+    if abierto && !children.is_empty() {
+        siguen.push(!ultimo);
+        let n = children.len();
+        for (i, &c) in children.iter().enumerate() {
+            node(ed, ui, h, c, siguen, i + 1 == n, actions);
+        }
+        siguen.pop();
+    }
+}
+
+/// Una fila de la jerarquía. Devuelve `true` si se pulsó la flecha de desplegar.
+fn row(ed: &mut Editor, ui: &mut Ui, id: EntityId, g: &Guias, actions: &mut Vec<HAction>) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), FILA), egui::Sense::click_and_drag());
+    let nivel = g.siguen.len() as f32;
+    let x0 = rect.left() + 4.0;
+    let cy = rect.center().y;
+    let selected = ed.selection == Some(id);
+    let p = ui.painter().clone();
+    if selected {
+        p.rect_filled(rect, 3.0, theme::ROW_ACTIVE);
+    } else if resp.hovered() {
+        p.rect_filled(rect, 3.0, theme::ROW_HOVER);
+    }
+    // Líneas del árbol.
+    let linea = egui::Stroke::new(1.0, theme::STROKE2);
+    for (k, &sigue) in g.siguen.iter().enumerate() {
+        let x = x0 + k as f32 * SANGRIA + SANGRIA / 2.0;
+        let ultima = k + 1 == g.siguen.len();
+        if ultima {
+            let fin = if g.ultimo { cy } else { rect.bottom() };
+            p.vline(x, rect.top()..=fin, linea);
+            let hasta = if g.hijos.is_some() { x0 + nivel * SANGRIA - 1.0 } else { x0 + nivel * SANGRIA + 3.0 };
+            p.hline(x..=hasta, cy, linea);
+        } else if sigue {
+            p.vline(x, rect.top()..=rect.bottom(), linea);
+        }
+    }
+    // Flecha de desplegar.
+    let mut plegar = false;
+    let xf = x0 + nivel * SANGRIA;
+    if let Some(abierto) = g.hijos {
+        let r = egui::Rect::from_center_size(egui::pos2(xf + SANGRIA / 2.0, cy), egui::vec2(SANGRIA, FILA));
+        let rf = ui.interact(r, ui.make_persistent_id(("hier-flecha", id.0)), egui::Sense::click());
+        plegar = rf.clicked();
+        let c = egui::pos2(xf + SANGRIA / 2.0, cy);
+        let col = if rf.hovered() { theme::TEXT1 } else { theme::TEXT3 };
+        let pts = if abierto {
+            vec![c + egui::vec2(-4.0, -2.0), c + egui::vec2(4.0, -2.0), c + egui::vec2(0.0, 3.0)]
+        } else {
+            vec![c + egui::vec2(-2.0, -4.0), c + egui::vec2(3.0, 0.0), c + egui::vec2(-2.0, 4.0)]
+        };
+        p.add(egui::Shape::convex_polygon(pts, col, egui::Stroke::NONE));
+    }
+    let xi = xf + SANGRIA + 2.0;
+    // Ojo: activar/desactivar.
+    let active = ed.scene.is_active(id);
+    let s = crate::icons::side(ui.ctx());
+    let ro = egui::Rect::from_center_size(egui::pos2(rect.right() - 12.0, cy), egui::vec2(20.0, FILA));
+    let rojo = ui.interact(ro, ui.make_persistent_id(("hier-ojo", id.0)), egui::Sense::click());
+    if rojo.clone().on_hover_text(if active { "Desactivar" } else { "Activar" }).clicked() {
+        actions.push(HAction::ToggleActive(id));
+    }
+    let (icono_ojo, tinta_ojo) = if active { (crate::icons::Icon::Ojo, if rojo.hovered() { theme::TEXT1 } else { theme::TEXT3 }) } else { (crate::icons::Icon::OjoCerrado, theme::TEXT4) };
+    crate::icons::image(ui.ctx(), icono_ojo, tinta_ojo).paint_at(ui, egui::Rect::from_center_size(ro.center(), egui::vec2(s, s)));
     if let Some((rid, text)) = &mut ed.rename
         && *rid == id
     {
-        let r = ui.add(egui::TextEdit::singleline(text).desired_width(150.0));
-        r.request_focus();
-        if r.lost_focus() {
+        let r = egui::Rect::from_min_max(egui::pos2(xi, rect.top() + 1.0), egui::pos2(ro.left() - 4.0, rect.bottom() - 1.0));
+        let te = ui.put(r, egui::TextEdit::singleline(text).margin(egui::vec2(4.0, 1.0)));
+        te.request_focus();
+        if te.lost_focus() {
             let (rid, text) = ed.rename.take().unwrap();
             if !text.trim().is_empty() {
                 ed.scene.set_name(rid, text.trim());
                 ed.commit("Renombrar");
             }
         }
-        return;
+        return plegar;
     }
     let (icon, icol) = icon_for(ed, id);
-    let active = ed.scene.is_active(id);
-    let selected = ed.selection == Some(id);
     let name = ed.scene.name(id);
     let text_col = if active { theme::TEXT1 } else { theme::TEXT4 };
-    let label = (crate::icons::image(ui.ctx(), icon, if active { icol } else { theme::TEXT4 }), RichText::new(name).color(text_col));
-    let resp = ui.add(egui::Button::selectable(selected, label).sense(egui::Sense::click_and_drag()));
+    crate::icons::image(ui.ctx(), icon, if active { icol } else { theme::TEXT4 }).paint_at(ui, egui::Rect::from_min_size(egui::pos2(xi, cy - s / 2.0), egui::vec2(s, s)));
+    let fuente = egui::TextStyle::Body.resolve(ui.style());
+    let ancho = (ro.left() - 4.0 - (xi + s + 5.0)).max(0.0);
+    let gal = ui.fonts_mut(|f| f.layout(name.clone(), fuente, text_col, f32::INFINITY));
+    let pos = egui::pos2(xi + s + 5.0, cy - gal.size().y / 2.0);
+    p.with_clip_rect(egui::Rect::from_min_size(pos, egui::vec2(ancho, FILA))).galley(pos, gal, text_col);
     if resp.clicked() {
         actions.push(HAction::Select(id));
     }
@@ -297,6 +369,7 @@ fn row(ed: &mut Editor, ui: &mut Ui, id: EntityId, actions: &mut Vec<HAction>) {
             actions.push(HAction::Delete(id));
         }
     });
+    plegar
 }
 
 // ───────────────────────────── Inspector ─────────────────────────────

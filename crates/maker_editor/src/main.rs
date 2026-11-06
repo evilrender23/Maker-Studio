@@ -7,7 +7,10 @@ mod editor;
 mod gizmo;
 mod hub;
 mod panels;
+mod icons;
+mod pixel_icons;
 mod theme;
+mod titlebar;
 mod update;
 mod viewport;
 
@@ -150,7 +153,7 @@ fn main() -> eframe::Result<()> {
     }
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_title("Maker Studio").with_inner_size(size).with_min_inner_size([1000.0, 620.0]).with_app_id("maker-studio"),
+        viewport: egui::ViewportBuilder::default().with_title("Maker Studio").with_inner_size(size).with_min_inner_size([1000.0, 620.0]).with_app_id("maker-studio").with_decorations(false),
         ..Default::default()
     };
     eframe::run_native("Maker Studio", options, Box::new(move |cc| Ok(Box::new(app::MakerApp::new(cc, opened, auto)))))

@@ -56,18 +56,30 @@ pub fn create_menu(ui: &mut Ui) -> Option<Create> {
     out
 }
 
-fn icon_for(ed: &Editor, id: EntityId) -> (&'static str, Color32) {
+/// Icono pixel art y color de cada entidad: cámara, luz (sol o bombilla), la forma de su malla
+/// (naranja si tiene cuerpo físico) o el de objeto vacío.
+fn icon_for(ed: &Editor, id: EntityId) -> (crate::icons::Icon, Color32) {
+    use crate::icons::Icon;
     if ed.scene.has::<Camera>(id) {
-        ("◉", theme::CYAN)
-    } else if ed.scene.has::<Light>(id) {
-        ("☀", theme::YELLOW)
-    } else if ed.scene.has::<RigidBody>(id) {
-        ("◆", theme::ORANGE)
-    } else if ed.scene.has::<MeshRenderer>(id) {
-        ("■", theme::ACCENT)
-    } else {
-        ("○", theme::TEXT3)
+        return (Icon::Camara, theme::CYAN);
     }
+    if let Some(l) = ed.scene.get::<Light>(id) {
+        return (if l.kind == LightKind::Directional { Icon::Sol } else { Icon::Bombilla }, theme::YELLOW);
+    }
+    let Some(m) = ed.scene.get::<MeshRenderer>(id) else { return (Icon::Vacio, theme::TEXT3) };
+    let icon = match &m.mesh {
+        MeshSource::Model(_) => Icon::Modelo,
+        MeshSource::Primitive(p) => match p {
+            PrimitiveShape::Cube => Icon::Cubo,
+            PrimitiveShape::Sphere => Icon::Esfera,
+            PrimitiveShape::Plane => Icon::Plano,
+            PrimitiveShape::Cylinder => Icon::Cilindro,
+            PrimitiveShape::Cone => Icon::Cono,
+            PrimitiveShape::Capsule => Icon::Capsula,
+            PrimitiveShape::Torus => Icon::Toro,
+        },
+    };
+    (icon, if ed.scene.has::<RigidBody>(id) { theme::ORANGE } else { theme::ACCENT })
 }
 
 pub fn hierarchy(ed: &mut Editor, ui: &mut Ui) {
@@ -209,7 +221,7 @@ fn row(ed: &mut Editor, ui: &mut Ui, id: EntityId, actions: &mut Vec<HAction>) {
     let selected = ed.selection == Some(id);
     let name = ed.scene.name(id);
     let text_col = if active { theme::TEXT1 } else { theme::TEXT4 };
-    let label = (RichText::new(icon).color(if active { icol } else { theme::TEXT4 }), RichText::new(format!(" {name}")).color(text_col));
+    let label = (crate::icons::image(ui.ctx(), icon, if active { icol } else { theme::TEXT4 }), RichText::new(name).color(text_col));
     let resp = ui.add(egui::Button::selectable(selected, label).sense(egui::Sense::click_and_drag()));
     if resp.clicked() {
         actions.push(HAction::Select(id));

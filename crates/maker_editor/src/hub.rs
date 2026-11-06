@@ -50,7 +50,6 @@ pub struct Hub {
     pub demo: bool,
     pub open_path: String,
     pub error: Option<String>,
-    logo: Option<egui::TextureHandle>,
 }
 
 impl Hub {
@@ -64,20 +63,7 @@ impl Hub {
             demo: true,
             open_path: String::new(),
             error: None,
-            logo: None,
         }
-    }
-
-    /// Logo de Maker (assets/logo/maker-logo-black.png), embebido en el binario.
-    fn logo(&mut self, ctx: &egui::Context) -> egui::TextureHandle {
-        self.logo
-            .get_or_insert_with(|| {
-                let img = image::load_from_memory(include_bytes!("../../../assets/logo/maker-logo-black.png")).expect("logo PNG válido").to_rgba8();
-                let size = [img.width() as usize, img.height() as usize];
-                let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
-                ctx.load_texture("maker-logo", color, egui::TextureOptions::LINEAR)
-            })
-            .clone()
     }
 
     /// Dibuja el hub. Devuelve el proyecto a abrir.
@@ -85,11 +71,9 @@ impl Hub {
         let mut open = None;
         egui::CentralPanel::default_margins().show(ui, |ui| {
             ui.add_space(28.0);
-            let logo = self.logo(ui.ctx());
+            let (logo, size) = crate::icons::logo(ui.ctx(), 67.0);
             ui.vertical_centered(|ui| {
-                let w = 340.0;
-                let h = w * logo.size()[1] as f32 / logo.size()[0] as f32;
-                ui.add(egui::Image::new((logo.id(), egui::vec2(w, h))));
+                ui.add(egui::Image::new((logo.id(), size)));
             });
             ui.add_space(22.0);
             let width = ui.available_width().min(980.0);

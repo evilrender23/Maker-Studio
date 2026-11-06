@@ -165,6 +165,16 @@ impl eframe::App for MakerApp {
             self.close_prompt = true;
         }
 
+        crate::titlebar::bordes(&ctx);
+        let mut back_to_hub = false;
+        {
+            let (ed, upd, oculta) = (&mut self.ed, &self.upd, &mut self.upd_oculta);
+            crate::titlebar::show(ui, ed.is_some(), |ui| {
+                if let Some(ed) = ed {
+                    back_to_hub = menu_bar(ed, ui, upd, oculta);
+                }
+            });
+        }
         self.update_bar(ui);
         let Some(ed) = &mut self.ed else {
             if let Some(p) = self.hub.ui(ui) {
@@ -181,10 +191,6 @@ impl eframe::App for MakerApp {
         ed.tick(dt);
         shortcuts(ed, &ctx);
 
-        let mut back_to_hub = false;
-        egui::Panel::top("menu").frame(egui::Frame::new().fill(theme::CHROME).inner_margin(egui::Margin::symmetric(8, 3))).show(ui, |ui| {
-            back_to_hub = menu_bar(ed, ui, &self.upd, &mut self.upd_oculta);
-        });
         egui::Panel::top("toolbar")
             .frame(egui::Frame::new().fill(theme::CHROME).inner_margin(egui::Margin::symmetric(8, 4)).stroke(egui::Stroke::new(1.0, theme::STROKE4)))
             .show(ui, |ui| toolbar(ed, ui));
@@ -398,8 +404,6 @@ fn shortcuts(ed: &mut Editor, ctx: &egui::Context) {
 fn menu_bar(ed: &mut Editor, ui: &mut Ui, upd: &crate::update::Actualizador, upd_oculta: &mut bool) -> bool {
     let mut hub = false;
     egui::MenuBar::new().ui(ui, |ui| {
-        ui.label(RichText::new("◆ Maker Studio").strong().color(theme::ACCENT));
-        ui.add_space(6.0);
         ui.menu_button("Archivo", |ui| {
             if ui.button("Guardar escena            Ctrl+S").clicked() {
                 ed.save_scene();

@@ -128,6 +128,8 @@ pub struct Editor {
     pub gizmo: Gizmo,
     pub input: Input,
     pub game_focus: bool,
+    /// Captura del ratón durante Play.
+    pub cursor: maker_engine::CursorCapture,
     pub show_game_view: bool,
     pub show_grid: bool,
     pub shadows: bool,
@@ -195,6 +197,7 @@ impl Editor {
             gizmo: Gizmo::default(),
             input: Input::default(),
             game_focus: false,
+            cursor: Default::default(),
             show_game_view: true,
             show_grid: true,
             shadows: true,
@@ -423,6 +426,7 @@ impl Editor {
         runtime.project_root = Some(self.project.root.clone());
         self.play = Some(PlaySession { runtime, snapshot, selection: self.selection });
         self.game_focus = true;
+        self.cursor.iniciar(self.project.file.capturar_raton, true);
         self.input.release_all();
         self.gizmo.cancel();
     }
@@ -433,6 +437,7 @@ impl Editor {
         self.scene = Scene::from_file(&p.snapshot);
         self.selection = p.selection.filter(|s| self.scene.contains(*s));
         self.game_focus = false;
+        self.cursor.parar();
         self.input.release_all();
         self.euler_cache = None;
         log::info("motor", "■ Stop: escena restaurada");
@@ -459,7 +464,10 @@ impl Editor {
 
     pub fn tick(&mut self, dt: f32) {
         match &mut self.play {
-            Some(p) => p.runtime.tick(&mut self.scene, &self.input, dt),
+            Some(p) => {
+                p.runtime.tick(&mut self.scene, &self.input, dt);
+                self.cursor.modo_script(p.runtime.cursor_mode, self.game_focus);
+            }
             // Fuera de Play solo avanza el Animator seleccionado (vista previa).
             None => {
                 let sel = self.selection;

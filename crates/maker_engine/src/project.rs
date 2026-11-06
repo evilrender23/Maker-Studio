@@ -18,6 +18,13 @@ pub struct ProjectFile {
     pub main_scene: String,
     #[serde(default)]
     pub engine_version: String,
+    /// Capturar el ratón al jugar (editor en Play y juego exportado).
+    #[serde(default = "si")]
+    pub capturar_raton: bool,
+}
+
+fn si() -> bool {
+    true
 }
 
 #[derive(Clone, Debug)]
@@ -109,7 +116,7 @@ impl Project {
         }
         let project = Project {
             root: root.canonicalize().unwrap_or(root.to_path_buf()),
-            file: ProjectFile { name: name.into(), main_scene: "scenes/main.mscene".into(), engine_version: env!("CARGO_PKG_VERSION").into() },
+            file: ProjectFile { name: name.into(), main_scene: "scenes/main.mscene".into(), engine_version: env!("CARGO_PKG_VERSION").into(), capturar_raton: true },
         };
         project.save()?;
         let crate_name = sanitize_crate_name(name);
@@ -625,6 +632,14 @@ mod tests {
     fn crate_names_are_valid() {
         assert_eq!(sanitize_crate_name("Mi Juego 3D!"), "mi_juego_3d_scripts");
         assert_eq!(sanitize_crate_name("3D"), "game_3d_scripts");
+    }
+
+    #[test]
+    fn old_projects_capture_mouse_by_default() {
+        let f: ProjectFile = serde_json::from_str(r#"{"name":"Viejo","main_scene":"scenes/main.mscene"}"#).unwrap();
+        assert!(f.capturar_raton);
+        let f: ProjectFile = serde_json::from_str(r#"{"name":"M","main_scene":"s","capturar_raton":false}"#).unwrap();
+        assert!(!f.capturar_raton);
     }
 
     #[test]

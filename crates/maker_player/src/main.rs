@@ -3,7 +3,7 @@
 
 use egui::{Color32, Pos2, Rect};
 use maker_api::Key;
-use maker_engine::{Input, Project, Runtime, Scene, ScriptLib, log};
+use maker_engine::{CursorCapture, CursorMode, Input, Project, Runtime, Scene, ScriptLib, log};
 use maker_render::{RenderOptions, RenderView, SceneRenderer};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -26,6 +26,7 @@ struct Player {
     done: Arc<AtomicBool>,
     shot: bool,
     fullscreen: bool,
+    cursor: CursorCapture,
 }
 
 /// Letra A..Z → código de la ABI (0..25).
@@ -60,6 +61,27 @@ fn map_key(k: egui::Key) -> Option<Key> {
     })
 }
 
+/// Modo de cursor → órdenes de ventana. Bloqueado pide primero Confinado y
+/// luego Bloqueado: donde winit no sabe bloquear (X11) queda confinado, y
+/// donde no sabe confinar (macOS) queda bloqueado.
+fn aplicar_modo(ctx: &egui::Context, modo: CursorMode, centro: Option<Pos2>) {
+    use egui::ViewportCommand as V;
+    use egui::viewport::CursorGrab as G;
+    match modo {
+        CursorMode::Libre => {
+            if let Some(c) = centro {
+                ctx.send_viewport_cmd(V::CursorPosition(c));
+            }
+            ctx.send_viewport_cmd(V::CursorGrab(G::None));
+        }
+        CursorMode::Confinado => ctx.send_viewport_cmd(V::CursorGrab(G::Confined)),
+        CursorMode::Bloqueado => {
+            ctx.send_viewport_cmd(V::CursorGrab(G::Confined));
+            ctx.send_viewport_cmd(V::CursorGrab(G::Locked));
+        }
+    }
+}
+
 impl eframe::App for Player {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -67,6 +89,17 @@ impl eframe::App for Player {
         let dt = (now - self.last).as_secs_f32();
         self.last = now;
         self.frame += 1;
+
+        // Ratón: Esc / Mayús+F1 lo sueltan sin parar el juego; un clic lo recaptura.
+        let cursor = &mut self.cursor;
+        ctx.input_mut(|i| {
+            use egui::{Key as K, KeyboardShortcut as S, Modifiers as M};
+            if cursor.capturado() && (i.consume_key(M::NONE, K::Escape) || i.consume_shortcut(&S::new(M::SHIFT, K::F1))) {
+                cursor.soltar();
+            } else if !cursor.capturado() && i.pointer.any_pressed() {
+                cursor.clic_en_juego();
+            }
+        });
 
         ctx.input(|i| {
             for e in &i.events {
@@ -87,17 +120,27 @@ impl eframe::App for Player {
             self.input.set_key(Key::Shift, i.modifiers.shift);
             self.input.set_key(Key::Ctrl, i.modifiers.ctrl);
             self.input.set_key(Key::Alt, i.modifiers.alt);
-            self.input.mouse_buttons = [
+            self.input.mouse_buttons = self.cursor.botones([
                 i.pointer.button_down(egui::PointerButton::Primary),
                 i.pointer.button_down(egui::PointerButton::Secondary),
                 i.pointer.button_down(egui::PointerButton::Middle),
-            ];
+            ]);
         });
         for k in &self.hold {
             self.input.set_key(*k, true);
         }
         self.runtime.tick(&mut self.scene, &self.input, dt);
         self.input.end_frame();
+        self.cursor.modo_script(self.runtime.cursor_mode, true);
+        let foco = ctx.input(|i| i.focused);
+        self.cursor.foco_ventana(foco);
+        if let Some(m) = self.cursor.cambio() {
+            let centro = (foco && m == CursorMode::Libre).then(|| ctx.content_rect().center());
+            aplicar_modo(&ctx, m, centro);
+        }
+        if self.cursor.modo() == CursorMode::Bloqueado {
+            ctx.set_cursor_icon(egui::CursorIcon::None);
+        }
 
         egui::CentralPanel::no_frame().show(ui, |ui| {
             let rect = ui.max_rect();
@@ -182,6 +225,7 @@ fn main() -> eframe::Result<()> {
             }
             "-h" | "--help" => {
                 println!("Uso: maker-player [CARPETA_DEL_PROYECTO] [--scene ESCENA] [--screenshot PNG --frames N] [--hold TECLA]");
+                println!("Ratón capturado al jugar: Esc o Mayús+F1 lo suelta, un clic lo recaptura. F11: pantalla completa.");
                 return Ok(());
             }
             other => root = Some(PathBuf::from(other)),
@@ -225,6 +269,9 @@ fn main() -> eframe::Result<()> {
             renderer.project_root = Some(project.root.clone());
             let mut runtime = Runtime::start_en(&mut scene, lib, Some(&project.root));
             runtime.project_root = Some(project.root.clone());
+            // Las capturas automáticas no se quedan con el ratón del escritorio.
+            let mut cursor = CursorCapture::default();
+            cursor.iniciar(project.file.capturar_raton && screenshot.is_none(), true);
             Ok(Box::new(Player {
                 rs,
                 scene,
@@ -241,6 +288,7 @@ fn main() -> eframe::Result<()> {
                 done: Arc::new(AtomicBool::new(false)),
                 shot: false,
                 fullscreen: false,
+                cursor,
             }))
         }),
     )

@@ -127,6 +127,11 @@ cargo build --release
 `maker-studio --help` lista las opciones para pruebas automáticas
 (`--screenshot`, `--play`, `--hold TECLA`, `--select`, `--export`…).
 
+Al jugar, en el editor y en `maker-player`, el ratón queda capturado dentro
+del juego: **Esc** lo suelta, un clic lo recaptura y **F11** alterna pantalla
+completa en el reproductor. Detalles y modos por script en
+[docs/SCRIPTING.md](docs/SCRIPTING.md#ratón).
+
 En el Hub, **Crear proyecto** con la plantilla **Demo jugable** genera una
 escena con un personaje físico (WASD, Espacio para saltar, F para lanzar
 bolas), una pila de cajas, una luz que flota, un anillo que gira y una cámara
@@ -144,6 +149,7 @@ que sigue al jugador. Pulsa **F7** para compilar sus scripts y **▶ Play**.
 | Ctrl al arrastrar un gizmo | ajuste (0,5 m · 15° · 0,1) |
 | F | encuadrar la selección |
 | F5 / Ctrl+P | Play / Stop |
+| Esc · Mayús+F1 (jugando) | soltar el ratón sin parar; clic en el juego para recapturarlo |
 | F7 | compilar y recargar scripts |
 | Ctrl+S · Ctrl+Z · Ctrl+Y · Ctrl+D · Supr · F2 | guardar · deshacer · rehacer · duplicar · eliminar · renombrar |
 

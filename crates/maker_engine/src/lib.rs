@@ -7,6 +7,7 @@ pub mod animation;
 pub mod biblioteca;
 pub mod components;
 pub mod convexo;
+pub mod cursor;
 pub mod input;
 pub mod log;
 pub mod math;
@@ -19,6 +20,7 @@ pub mod scene;
 pub mod scripting;
 
 pub use components::*;
+pub use cursor::{CursorCapture, CursorMode};
 pub use glam;
 pub use hecs;
 pub use input::{Input, Key};

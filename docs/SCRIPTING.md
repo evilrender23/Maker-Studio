@@ -63,11 +63,36 @@ instancia; el botón ↺ vuelve al valor por defecto del código.
 | Transform    | `position`, `set_position`, `translate`, `rotation`, `set_rotation`, `rotate_y`, `rotate_local`, `scale`, `set_scale` (posición y rotación en espacio mundo) |
 | Otras        | `find(nombre)`, `exists`, `position_of`, `set_position_of`, `rotation_of`, `set_rotation_of`, `set_color`, `set_shading(e, Shading::Toon)`, `spawn(Primitive, pos, flags)`, `destroy` |
 | Animación    | `play_animation(e, "Walk_Loop", fundido_s)` (devuelve `false` si no hay Animador), `set_animation_speed(e, v)` |
-| Entrada      | `key_down`, `key_pressed`, `axis(neg, pos)`, `mouse_down`, `mouse_delta` |
+| Entrada      | `key_down`, `key_pressed`, `axis(neg, pos)`, `mouse_down`, `mouse_delta`, `set_cursor_mode(CursorMode::…)` |
 | Física       | `velocity`, `set_velocity`, `apply_impulse`, `apply_impulse_to`, `raycast(origen, dir, max)` |
 
 `spawn_flags::DYNAMIC_BODY` / `STATIC_BODY` añaden cuerpo rígido y
 colisionador al crear una primitiva.
+
+### Ratón
+
+Al jugar (Play del editor o juego exportado) el ratón queda **bloqueado**:
+oculto, sin salir de la ventana, y `mouse_delta` da el movimiento relativo sin
+límite, listo para cámaras FPS. **Esc** (o **Mayús+F1**) lo suelta sin parar
+el juego; un clic en el juego lo vuelve a capturar y perder el foco de la
+ventana lo suelta. Mientras está capturado, ese primer Esc no llega al script.
+Se desactiva por proyecto en **Archivo → Capturar ratón en Play**
+(`"capturar_raton": false` en `project.maker`).
+
+Un script puede pedir otro modo, por ejemplo para un menú:
+
+```rust
+ctx.set_cursor_mode(CursorMode::Libre);      // visible y libre
+ctx.set_cursor_mode(CursorMode::Confinado);  // visible, sin salir de la ventana
+ctx.set_cursor_mode(CursorMode::Bloqueado);  // oculto, solo movimiento relativo
+```
+
+Cambiar de modo captura al momento si el juego tiene el foco; repetir la misma
+petición cada fotograma no anula el Esc del jugador.
+
+Según la plataforma: en Wayland, Windows y macOS el bloqueo es real; en X11
+winit no sabe bloquear y el ratón queda confinado y oculto (`mouse_delta`
+sigue llegando igual). En macOS no existe el modo confinado.
 
 ## Por qué es rápido y seguro
 

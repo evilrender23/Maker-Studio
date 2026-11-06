@@ -155,6 +155,10 @@ impl MakerApp {
             if a.frame == 4 && a.play {
                 ed.play();
                 ed.game_focus = true;
+                // Las capturas automáticas no se quedan con el ratón del escritorio.
+                if a.screenshot.is_some() {
+                    ed.cursor.parar();
+                }
             }
             if ed.is_playing() {
                 for k in &a.hold {
@@ -313,6 +317,7 @@ impl eframe::App for MakerApp {
                 crate::viewport::show(ed, ui, &self.rs);
             });
         });
+        crate::viewport::capturar_raton(ed, &ctx);
 
         // Confirmar ediciones del inspector cuando termina la interacción.
         if ed.pending_edit.is_some() && !ctx.input(|i| i.pointer.any_down()) && !ctx.egui_wants_keyboard_input() {
@@ -368,6 +373,7 @@ impl eframe::App for MakerApp {
             self.agente = None;
             if let Some(ed) = &mut self.ed {
                 ed.stop();
+                crate::viewport::capturar_raton(ed, &ctx);
                 if ed.dirty {
                     ed.save_scene();
                 }
@@ -519,6 +525,10 @@ fn shortcuts(ed: &mut Editor, ctx: &egui::Context) {
         if i.consume_key(M::NONE, K::F7) {
             ed.build_scripts();
         }
+        // Esc suelta el ratón capturado sin parar el juego (el siguiente Esc es del juego).
+        if ed.cursor.capturado() && (i.consume_key(M::NONE, K::Escape) || i.consume_shortcut(&S::new(M::SHIFT, K::F1))) {
+            ed.cursor.soltar();
+        }
         if typing {
             return;
         }
@@ -565,6 +575,13 @@ fn menu_bar(ed: &mut Editor, ui: &mut Ui, upd: &crate::update::Actualizador, upd
                     }
                 }
             });
+            let mut capturar = ed.project.file.capturar_raton;
+            if ui.checkbox(&mut capturar, "Capturar ratón en Play").on_hover_text("Esc lo suelta · clic en el juego lo recaptura").changed() {
+                ed.project.file.capturar_raton = capturar;
+                if let Err(e) = ed.project.save() {
+                    log::error("editor", e);
+                }
+            }
             if ui.button("Hacer esta escena la principal").clicked() {
                 ed.project.file.main_scene = ed.project.relative(&ed.scene_path);
                 match ed.project.save() {
@@ -661,6 +678,7 @@ fn menu_bar(ed: &mut Editor, ui: &mut Ui, upd: &crate::update::Actualizador, upd
                 ("Ctrl al arrastrar", "ajuste a rejilla"),
                 ("F", "encuadrar selección"),
                 ("F5 · Ctrl+P", "Play / Stop"),
+                ("Esc · Mayús+F1", "soltar el ratón del juego"),
                 ("F7", "compilar scripts"),
             ] {
                 ui.horizontal(|ui| {

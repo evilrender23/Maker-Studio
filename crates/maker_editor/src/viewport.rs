@@ -6,7 +6,7 @@ use crate::gizmo::{GizmoMode, View};
 use crate::theme;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2 as EVec2};
 use glam::{Mat4, Vec2, Vec3};
-use maker_engine::Key;
+use maker_engine::{CursorMode, Key};
 use maker_engine::components::*;
 use maker_render::{RenderOptions, RenderView};
 
@@ -128,11 +128,16 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, rs: &egui_wgpu::RenderState) {
 
     // ── Entrada del juego ──
     if ed.is_playing() {
-        if resp.clicked() || resp.drag_started() {
-            ed.game_focus = true;
-        } else if ctx.input(|i| i.pointer.any_pressed()) && !resp.hovered() {
-            ed.game_focus = false;
-            ed.input.release_all();
+        // Capturado, la capa de captura tapa el editor: todo clic es del juego.
+        if !ed.cursor.capturado() && ctx.input(|i| i.pointer.any_pressed()) {
+            if resp.hovered() {
+                ed.game_focus = true;
+                ed.cursor.clic_en_juego();
+            } else {
+                ed.game_focus = false;
+                ed.cursor.soltar();
+                ed.input.release_all();
+            }
         }
         if ed.game_focus {
             ctx.input(|i| {
@@ -150,11 +155,11 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, rs: &egui_wgpu::RenderState) {
                 ed.input.set_key(Key::Shift, i.modifiers.shift);
                 ed.input.set_key(Key::Ctrl, i.modifiers.ctrl);
                 ed.input.set_key(Key::Alt, i.modifiers.alt);
-                ed.input.mouse_buttons = [
+                ed.input.mouse_buttons = ed.cursor.botones([
                     i.pointer.button_down(egui::PointerButton::Primary),
                     i.pointer.button_down(egui::PointerButton::Secondary),
                     i.pointer.button_down(egui::PointerButton::Middle),
-                ];
+                ]);
                 if let Some(p) = i.pointer.hover_pos() {
                     ed.input.mouse_pos = Vec2::new(p.x - rect.min.x, p.y - rect.min.y);
                 }
@@ -310,6 +315,8 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, rs: &egui_wgpu::RenderState) {
         painter.rect_stroke(rect.shrink(1.0), 0.0, Stroke::new(2.0, col), egui::StrokeKind::Inside);
         let text = if p.runtime.paused {
             "EN PAUSA".to_string()
+        } else if ed.cursor.capturado() {
+            format!("JUGANDO · {:.1} s · Esc suelta el ratón", p.runtime.time)
         } else if ed.game_focus {
             format!("JUGANDO · {:.1} s · clic fuera para soltar el teclado", p.runtime.time)
         } else {
@@ -324,6 +331,56 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, rs: &egui_wgpu::RenderState) {
     }
     if game_cam.is_none() && ed.is_playing() && ed.show_game_view {
         painter.text(rect.center(), Align2::CENTER_CENTER, "No hay cámara principal en la escena", FontId::proportional(14.0), theme::TEXT2);
+    }
+}
+
+/// Aplica la captura del ratón a la ventana (tras dibujar los paneles) y,
+/// mientras dura, tapa el editor para que no reaccione a clics ni hover.
+pub fn capturar_raton(ed: &mut Editor, ctx: &egui::Context) {
+    let foco = ctx.input(|i| i.focused);
+    ed.cursor.foco_ventana(foco);
+    if let Some(m) = ed.cursor.cambio() {
+        // Al soltar, el cursor reaparece en el centro del juego (no donde se ocultó).
+        let centro = (foco && m == CursorMode::Libre).then(|| ed.viewport_rect.center());
+        aplicar_modo(ctx, m, centro);
+    }
+    let modo = ed.cursor.modo();
+    if modo == CursorMode::Libre {
+        return;
+    }
+    if modo == CursorMode::Bloqueado {
+        ctx.set_cursor_icon(egui::CursorIcon::None);
+    }
+    // Las teclas son del juego, no del campo de texto que tuviera el foco.
+    ctx.memory_mut(|m| {
+        if let Some(id) = m.focused() {
+            m.surrender_focus(id);
+        }
+    });
+    let r = ctx.content_rect();
+    egui::Area::new(egui::Id::unique("captura-raton")).order(egui::Order::Foreground).fixed_pos(r.min).show(ctx, |ui| {
+        ui.allocate_rect(Rect::from_min_size(r.min, r.size()), Sense::click_and_drag());
+    });
+}
+
+/// Modo de cursor → órdenes de ventana. Bloqueado pide primero Confinado y
+/// luego Bloqueado: donde winit no sabe bloquear (X11) queda confinado, y
+/// donde no sabe confinar (macOS) queda bloqueado.
+pub fn aplicar_modo(ctx: &egui::Context, modo: CursorMode, centro: Option<Pos2>) {
+    use egui::ViewportCommand as V;
+    use egui::viewport::CursorGrab as G;
+    match modo {
+        CursorMode::Libre => {
+            if let Some(c) = centro {
+                ctx.send_viewport_cmd(V::CursorPosition(c));
+            }
+            ctx.send_viewport_cmd(V::CursorGrab(G::None));
+        }
+        CursorMode::Confinado => ctx.send_viewport_cmd(V::CursorGrab(G::Confined)),
+        CursorMode::Bloqueado => {
+            ctx.send_viewport_cmd(V::CursorGrab(G::Confined));
+            ctx.send_viewport_cmd(V::CursorGrab(G::Locked));
+        }
     }
 }
 

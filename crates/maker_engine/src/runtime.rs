@@ -35,6 +35,8 @@ pub struct Runtime {
     pub animation: Animation,
     /// Raíz del proyecto (para resolver rutas de modelos y clips).
     pub project_root: Option<std::path::PathBuf>,
+    /// Último modo de cursor pedido por un script (`None`: el del proyecto).
+    pub cursor_mode: Option<maker_api::CursorMode>,
 }
 
 /// Estado que ven las funciones del host durante una llamada a un script.
@@ -44,6 +46,7 @@ struct HostCtx<'a> {
     input: &'a Input,
     destroyed: Vec<EntityId>,
     source: String,
+    cursor_mode: Option<maker_api::CursorMode>,
 }
 
 impl Runtime {
@@ -56,7 +59,7 @@ impl Runtime {
     pub fn start_en(scene: &mut Scene, lib: Option<Arc<ScriptLib>>, raiz: Option<&std::path::Path>) -> Runtime {
         scene.update_transforms();
         let physics = Physics::build_en(scene, raiz);
-        let mut rt = Runtime { physics, lib, instances: Vec::new(), time: 0.0, frame: 0, accumulator: 0.0, paused: false, animation: Animation::default(), project_root: raiz.map(std::path::Path::to_path_buf) };
+        let mut rt = Runtime { physics, lib, instances: Vec::new(), time: 0.0, frame: 0, accumulator: 0.0, paused: false, animation: Animation::default(), project_root: raiz.map(std::path::Path::to_path_buf), cursor_mode: None };
         let mut slots: Vec<(EntityId, Scripts)> = {
             let mut q = scene.world.query::<(&EntityId, &Scripts)>();
             q.iter().map(|(id, s)| (*id, s.clone())).collect()
@@ -104,7 +107,7 @@ impl Runtime {
         }
         let dt = dt.clamp(0.0, 0.1);
         let lib = self.lib.clone();
-        let mut ctx = HostCtx { scene, physics: &mut self.physics, input, destroyed: Vec::new(), source: String::new() };
+        let mut ctx = HostCtx { scene, physics: &mut self.physics, input, destroyed: Vec::new(), source: String::new(), cursor_mode: None };
         let api = host_api(&mut ctx);
         // Todo acceso posterior pasa por el mismo puntero que ven los scripts.
         let ctx = unsafe { &mut *(api.ctx as *mut HostCtx) };
@@ -184,6 +187,9 @@ impl Runtime {
             }
         }
         ctx.scene.update_transforms();
+        if let Some(m) = ctx.cursor_mode {
+            self.cursor_mode = Some(m);
+        }
         // Animación después de los scripts (que pueden cambiar de clip).
         self.animation.update(ctx.scene, self.project_root.as_deref(), dt, |_| true);
         self.time += dt;
@@ -252,6 +258,7 @@ fn host_api(ctx: &mut HostCtx) -> HostApi {
         set_shading: h_set_shading,
         play_animation: h_play_animation,
         set_animation_speed: h_set_animation_speed,
+        set_cursor_mode: h_set_cursor_mode,
     }
 }
 
@@ -421,6 +428,14 @@ unsafe extern "C" fn h_set_animation_speed(c: *mut c_void, e: Entity, speed: f32
     }
 }
 
+unsafe extern "C" fn h_set_cursor_mode(c: *mut c_void, code: u32) {
+    let c = unsafe { cx(c) };
+    match maker_api::CursorMode::from_u32(code) {
+        Some(m) => c.cursor_mode = Some(m),
+        None => log::warn("script", format!("set_cursor_mode: modo desconocido {code}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -484,7 +499,31 @@ mod tests {
         }
     }
 
-    maker_api::script_library!(TEST_LIB; Spinner, Spawner, Panicker, Toonify, Dancer);
+    #[derive(Default)]
+    struct MenuCursor;
+    impl Script for MenuCursor {
+        fn update(&mut self, ctx: &mut Ctx) {
+            ctx.set_cursor_mode(if ctx.frame == 0 { CursorMode::Libre } else { CursorMode::Bloqueado });
+        }
+    }
+
+    maker_api::script_library!(TEST_LIB; Spinner, Spawner, Panicker, Toonify, Dancer, MenuCursor);
+
+    #[test]
+    fn scripts_request_cursor_mode() {
+        let lib = Arc::new(ScriptLib::from_static(&TEST_LIB).unwrap());
+        let mut s = Scene::starter();
+        let cube = s.find_by_name("Cubo").unwrap();
+        let mut rt = Runtime::start(&mut s, Some(lib.clone()));
+        rt.tick(&mut s, &Input::default(), 1.0 / 60.0);
+        assert_eq!(rt.cursor_mode, None, "sin scripts que lo pidan, manda el proyecto");
+        s.insert(cube, Scripts(vec![ScriptSlot { name: "MenuCursor".into(), enabled: true, ..Default::default() }]));
+        let mut rt = Runtime::start(&mut s, Some(lib));
+        rt.tick(&mut s, &Input::default(), 1.0 / 60.0);
+        assert_eq!(rt.cursor_mode, Some(CursorMode::Libre));
+        rt.tick(&mut s, &Input::default(), 1.0 / 60.0);
+        assert_eq!(rt.cursor_mode, Some(CursorMode::Bloqueado));
+    }
 
     #[test]
     fn scripts_drive_animator_through_abi() {

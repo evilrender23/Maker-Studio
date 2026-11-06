@@ -59,6 +59,9 @@ pub fn create_menu(ui: &mut Ui) -> Option<Create> {
     if ui.button("Cámara").clicked() {
         out = Some(Create::Camera);
     }
+    if ui.button("Nueva escultura").on_hover_text("Una esfera lista para esculpir").clicked() {
+        out = Some(Create::Escultura);
+    }
     ui.menu_button("Interfaz", |ui| {
         for c in CrearUi::MENU {
             let img = crate::icons::image(ui.ctx(), icono_crear_ui(c), theme::GREEN);

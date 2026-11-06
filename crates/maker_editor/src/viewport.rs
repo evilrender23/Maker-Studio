@@ -32,8 +32,22 @@ pub fn map_key(k: egui::Key) -> Option<Key> {
 }
 
 fn toolbar(ed: &mut Editor, ui: &mut egui::Ui) {
+    if ed.modo == crate::esculpir::Modo::Esculpir {
+        // Solo las herramientas de esculpir.
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            crate::esculpir::selector_modo(ed, ui);
+            ui.separator();
+            crate::esculpir::barra(ed, ui);
+        });
+        return;
+    }
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
+        if !ed.is_playing() {
+            crate::esculpir::selector_modo(ed, ui);
+            ui.separator();
+        }
         for (mode, label, key) in [(GizmoMode::Translate, "Mover", "W"), (GizmoMode::Rotate, "Rotar", "E"), (GizmoMode::Scale, "Escalar", "R")] {
             if ui.selectable_label(ed.gizmo.mode == mode, label).on_hover_text(format!("Herramienta {label} ({key})")).clicked() {
                 ed.gizmo.mode = mode;
@@ -96,7 +110,15 @@ fn toolbar(ed: &mut Editor, ui: &mut egui::Ui) {
 
 pub fn show(ed: &mut Editor, ui: &mut egui::Ui, rs: &egui_wgpu::RenderState) {
     toolbar(ed, ui);
-    let rect = ui.available_rect_before_wrap();
+    let esculpiendo = ed.modo == crate::esculpir::Modo::Esculpir;
+    let mut rect = ui.available_rect_before_wrap();
+    // En el modo Esculpir, el estante de pinceles va debajo de la vista.
+    let estante = esculpiendo.then(|| {
+        let h = crate::esculpir::alto_estante();
+        let r = Rect::from_min_max(egui::pos2(rect.min.x, rect.max.y - h), rect.max);
+        rect.max.y -= h;
+        r
+    });
     ed.viewport_rect = rect;
     let resp = ui.interact(rect, ui.scope_id().with("viewport"), Sense::click_and_drag());
     let ppp = ui.ctx().pixels_per_point();
@@ -112,8 +134,21 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, rs: &egui_wgpu::RenderState) {
     };
     let editing_view = game_cam.is_none();
 
-    let mut opts = RenderOptions { show_grid: ed.show_grid && editing_view, shadows: ed.shadows, post: ed.post_fx, gi: ed.gi, gi_debug: ed.gi_debug, ..Default::default() };
-    if editing_view && let Some(s) = ed.selection {
+    let mut opts = RenderOptions { show_grid: ed.show_grid && editing_view, shadows: ed.shadows, post: ed.post_fx, gi: ed.gi, gi_debug: ed.gi_debug, sculpt_wire: esculpiendo && ed.esculpir.alambre, ..Default::default() };
+    let view = View {
+        view_proj: rview.view_proj(),
+        eye: rview.eye,
+        size: Vec2::new(rect.width(), rect.height()),
+        origin: rect.min,
+        world_per_px_at_1: 2.0 * (fov.to_radians() * 0.5).tan() / rect.height().max(1.0),
+    };
+    // Esculpir antes de dibujar: lo de este fotograma ya se ve en esta imagen.
+    if esculpiendo && editing_view {
+        crate::esculpir::entrada(ed, &ui.ctx().clone(), &resp, rect, &view);
+    }
+    crate::esculpir::actualizar(ed);
+    let esculpiendo = ed.modo == crate::esculpir::Modo::Esculpir;
+    if editing_view && !esculpiendo && let Some(s) = ed.selection {
         let h = ed.scene.hierarchy();
         let mut stack = vec![s];
         while let Some(c) = stack.pop() {
@@ -141,14 +176,6 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, rs: &egui_wgpu::RenderState) {
     if let Some(id) = ed.tex_id {
         painter.image(id, rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
     }
-
-    let view = View {
-        view_proj: rview.view_proj(),
-        eye: rview.eye,
-        size: Vec2::new(rect.width(), rect.height()),
-        origin: rect.min,
-        world_per_px_at_1: 2.0 * (fov.to_radians() * 0.5).tan() / rect.height().max(1.0),
-    };
 
     let ctx = ui.ctx().clone();
     let playing_game = ed.is_playing() && ed.game_focus;
@@ -223,7 +250,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, rs: &egui_wgpu::RenderState) {
         if resp.dragged_by(egui::PointerButton::Middle) || (mmb && resp.dragged()) {
             ed.cam.pan(delta.x, delta.y, rect.height());
         }
-        if alt && resp.dragged_by(egui::PointerButton::Primary) {
+        if alt && !esculpiendo && resp.dragged_by(egui::PointerButton::Primary) {
             ed.cam.orbit(delta.x, delta.y);
         }
         if flying && !playing_game {
@@ -237,7 +264,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, rs: &egui_wgpu::RenderState) {
             }
         }
 
-        let modo_2d = ed.modo_ui && ed.mostrar_ui && !ed.is_playing();
+        let modo_2d = ed.modo_ui && ed.mostrar_ui && !ed.is_playing() && !esculpiendo;
         if modo_2d {
             crate::ui_editor::editar(ed, ui, &resp, rect, &painter);
         } else if ed.mostrar_ui {
@@ -247,7 +274,10 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, rs: &egui_wgpu::RenderState) {
 
         // Gizmo.
         let snap_held = ctx.input(|i| i.modifiers.command);
-        if let Some(sel) = ed.selection.filter(|s| ed.scene.contains(*s) && !modo_2d && !es_ui(ed, *s)) {
+        if esculpiendo {
+            crate::esculpir::dibujar_cursor(ed, &ctx, &painter, &resp, rect, &view);
+        }
+        if let Some(sel) = ed.selection.filter(|s| ed.scene.contains(*s) && !modo_2d && !es_ui(ed, *s) && !esculpiendo) {
             let world = ed.scene.global(sel);
             let mouse = ctx.input(|i| i.pointer.hover_pos());
             let mut hovered = None;
@@ -293,6 +323,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, rs: &egui_wgpu::RenderState) {
         // Selección por clic.
         if resp.clicked_by(egui::PointerButton::Primary)
             && !modo_2d
+            && !esculpiendo
             && !alt
             && !ed.gizmo.is_dragging()
             && let Some(m) = resp.interact_pointer_pos()
@@ -304,7 +335,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, rs: &egui_wgpu::RenderState) {
         // Atajos del viewport (si no se escribe en un campo de texto).
         if (resp.hovered() || resp.has_focus()) && !ctx.egui_wants_keyboard_input() && !rmb {
             ctx.input(|i| {
-                if !i.modifiers.command {
+                if !i.modifiers.command && !esculpiendo {
                     if i.key_pressed(egui::Key::W) {
                         ed.gizmo.mode = GizmoMode::Translate;
                     }
@@ -350,6 +381,12 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, rs: &egui_wgpu::RenderState) {
     }
 
     orientation_widget(&painter, rect, &rview.view);
+    if let Some(r) = estante {
+        crate::esculpir::estante(ed, ui, r);
+    }
+    if esculpiendo {
+        crate::esculpir::emergente(ed, &ctx);
+    }
 
     // Marco de Play (como el tinte de Unity).
     if let Some(p) = &ed.play {

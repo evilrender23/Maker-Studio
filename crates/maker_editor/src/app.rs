@@ -544,6 +544,14 @@ fn shortcuts(ed: &mut Editor, ctx: &egui::Context) {
         if typing {
             return;
         }
+        // Modo Esculpir: sus atajos (pinceles, tamaño, simetría…) y Tab para entrar o salir.
+        if !game {
+            if crate::esculpir::activo(ed) {
+                crate::esculpir::atajos(ed, i);
+            } else if crate::esculpir::puede_entrar(ed) && i.consume_key(M::NONE, K::Tab) {
+                crate::esculpir::entrar(ed);
+            }
+        }
         if i.consume_shortcut(&S::new(M::COMMAND, K::S)) {
             ed.save_scene();
         }
@@ -633,12 +641,17 @@ fn menu_bar(ed: &mut Editor, ui: &mut Ui, upd: &crate::update::Actualizador, upd
             }
         });
         ui.menu_button("Editar", |ui| {
-            let ul = ed.undo.undo_label().map(|l| format!("Deshacer: {l}")).unwrap_or_else(|| "Deshacer".into());
-            if ui.add_enabled(ed.undo.can_undo() && !ed.is_playing(), egui::Button::new(format!("{ul}   Ctrl+Z"))).clicked() {
+            // En el modo Esculpir, el historial de trazos.
+            let (u, r) = crate::esculpir::etiquetas(ed).unwrap_or_else(|| {
+                let (u, r) = (&ed.undo, &ed.undo);
+                (u.can_undo().then(|| u.undo_label().unwrap_or_default().to_string()), r.can_redo().then(|| r.redo_label().unwrap_or_default().to_string()))
+            });
+            let ul = u.as_ref().map(|l| format!("Deshacer: {l}")).unwrap_or_else(|| "Deshacer".into());
+            if ui.add_enabled(u.is_some() && !ed.is_playing(), egui::Button::new(format!("{ul}   Ctrl+Z"))).clicked() {
                 ed.undo();
             }
-            let rl = ed.undo.redo_label().map(|l| format!("Rehacer: {l}")).unwrap_or_else(|| "Rehacer".into());
-            if ui.add_enabled(ed.undo.can_redo() && !ed.is_playing(), egui::Button::new(format!("{rl}   Ctrl+Y"))).clicked() {
+            let rl = r.as_ref().map(|l| format!("Rehacer: {l}")).unwrap_or_else(|| "Rehacer".into());
+            if ui.add_enabled(r.is_some() && !ed.is_playing(), egui::Button::new(format!("{rl}   Ctrl+Y"))).clicked() {
                 ed.redo();
             }
             ui.separator();
@@ -698,6 +711,7 @@ fn menu_bar(ed: &mut Editor, ui: &mut Ui, upd: &crate::update::Actualizador, upd
                 ("W / E / R", "mover / rotar / escalar"),
                 ("Ctrl al arrastrar", "ajuste a rejilla"),
                 ("F", "encuadrar selección"),
+                ("Tab", "modo Esculpir (con una malla seleccionada)"),
                 ("F5 · Ctrl+P", "Play / Stop"),
                 ("Esc · Mayús+F1", "soltar el ratón del juego"),
                 ("F7", "compilar scripts"),

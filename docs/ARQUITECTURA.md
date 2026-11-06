@@ -1,12 +1,13 @@
 # Arquitectura
 
-Maker Studio es un workspace de Cargo con cinco crates:
+Maker Studio es un workspace de Cargo con seis crates:
 
 | Crate          | Qué es |
 |----------------|--------|
 | `maker_api`    | API de scripting: tipos C-ABI, el trait `Script`, `Ctx`, `Props` y la macro `export_scripts!`. Es lo único de lo que depende el crate de scripts de un juego. |
 | `maker_engine` | Núcleo sin gráficos: ECS, interfaz de juego (`ui/`: layout, estilos, fuentes, plantillas, entrada y lista de dibujo), escena y su formato, jerarquía de transforms, mallas (primitivas y glTF), modelos con materiales, esqueletos y clips (`model.rs`), animación (`animation.rs`), biblioteca integrada (`biblioteca.rs`), física, entrada, carga de scripts, bucle de juego, proyectos. Se prueba sin ventana. |
 | `maker_render` | Renderizador de escena sobre wgpu (Vulkan, Metal, DX12 o GL según la plataforma). |
+| `maker_sculpt` | Esculpido digital sin interfaz: malla esculpible, BVH, trazo, pinceles, caída, simetría, máscara, deshacer por trazo y escritura `.glb`. Ver [ESCULPIR.md](ESCULPIR.md). |
 | `maker_editor` | El editor (`maker-studio`), con egui. |
 | `maker_player` | El reproductor sin editor (`maker-player`), que es el ejecutable de un juego exportado. |
 
@@ -34,6 +35,7 @@ Maker Studio es un workspace de Cargo con cinco crates:
 | Exportar el juego | los tres | Archivo → Exportar juego: reproductor + escenas activas del orden + assets + biblioteca de scripts en `export/<nombre>/`. |
 | Project Hub | Unity Hub, gestor de proyectos de Godot | Pantalla inicial con recientes, nuevo (demo o básico) y abrir. |
 | Controles de viewport | Unity / Unreal | Clic derecho + WASDQE para volar, Alt+clic para orbitar, botón central para desplazar, W/E/R para gizmos, F para encuadrar. |
+| Modos del visor sobre la misma escena | Blender (*Object Mode* / *Sculpt Mode*) | Tab cambia entre Objeto y Esculpir; al salir, la escultura se hornea a un `.glb` del proyecto y la entidad lo referencia con un paso normal del historial. |
 
 ## Rendimiento
 
@@ -64,6 +66,23 @@ Maker Studio es un workspace de Cargo con cinco crates:
 - Scripts nativos sin intérprete ni GC.
 - El historial de deshacer guarda la escena completa solo al terminar una
   edición (al soltar el ratón), no en cada fotograma.
+
+## Esculpido (`maker_sculpt`)
+
+Malla en estructura de arrays (posiciones, normales, máscara), con los vértices repetidos en
+las costuras soldados y un mapa a los vértices de render (UV, colores, tangentes, submallas y
+materiales) para guardar el modelo tal como era. Un BVH de hojas de 128 a 256 triángulos da
+los rayos y las consultas de esfera y de cilindro; los vértices se renumeran para que los de
+cada hoja sean contiguos, así una hoja es a la vez la unidad de trabajo en paralelo (rayon),
+de deshacer (se guardan solo las hojas tocadas) y de subida a la GPU. Tras cada fotograma solo
+se recalculan las normales y las cajas de las hojas tocadas y sus vecinas, y el renderizador
+reescribe con `queue.write_buffer` solo esos rangos de un búfer de vértices dinámico (la
+máscara oscurece el color de vértice). Los búferes de trabajo tienen el tamaño de la malla y
+se reutilizan: un toque no reserva memoria. Pruebas: dirección de cada pincel, inversión,
+máscara, simetría exacta, copias radiales, Capa sin acumular, volumen con Taubin, deshacer
+exacto, rayos y consultas del BVH, ida y vuelta por `.glb`, rangos de subida y una prueba de
+rendimiento sobre un millón de vértices; en `maker_render`, una prueba sin ventana de la subida
+parcial.
 
 ## Renderizador
 

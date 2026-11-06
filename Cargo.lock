@@ -1583,6 +1583,7 @@ dependencies = [
  "maker_api",
  "maker_engine",
  "maker_render",
+ "maker_sculpt",
  "rfd",
  "serde",
  "serde_json",

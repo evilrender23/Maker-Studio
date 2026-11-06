@@ -77,6 +77,12 @@ scripts de cada juego.
   filtro espacial; cuatro niveles de calidad (≈ 1,1 ms en Media a 1080 p en
   una RTX 4090) y vistas de depuración en el visor. Ver
   [docs/ILUMINACION.md](docs/ILUMINACION.md).
+- **Esculpir**: modo Esculpir en el visor (Tab), como en Blender, con 13
+  pinceles (estándar, arcilla, suavizar, mover, inflar, pliegues, aplanar,
+  pellizcar, bloque, recortar, capa, empujar), simetría en espejo y radial,
+  máscara, deshacer por trazo y guardado como `.glb` del proyecto. Un toque
+  sobre un millón de vértices tarda milisegundos. Ver
+  [docs/ESCULPIR.md](docs/ESCULPIR.md).
 - **Interfaz de juego**: lienzos con escala por resolución de referencia,
   anclas y pivote como `RectTransform`, cajas y rejillas como los contenedores
   de Godot, paneles, imágenes con 9-slice, texto con fuentes TTF/OTF del

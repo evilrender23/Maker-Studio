@@ -369,6 +369,14 @@ fn clave_cache(p: &Path) -> Option<PathBuf> {
 }
 
 impl ContenidoUi {
+    /// Olvida la miniatura de un modelo reescrito (la siguiente se genera de nuevo).
+    pub fn invalidar_miniatura(&mut self, raiz: &Path, rel: &str) {
+        self.minis.remove(&raiz.join(rel));
+        if let Some(r) = &mut self.renderer {
+            r.reload_model(&maker_engine::components::MeshSource::Model(rel.to_string()));
+        }
+    }
+
     /// Miniatura de un modelo o imagen: de la caché o, como mucho una por fotograma, generada.
     fn mini(&mut self, ed_renderer: &SceneRenderer, raiz: &Path, ctx: &egui::Context, p: &Path, puede: &mut bool) -> Option<egui::TextureHandle> {
         if let Some(t) = self.minis.get(p) {

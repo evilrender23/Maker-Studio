@@ -13,6 +13,7 @@ path = "src/main.rs"
 maker_api.workspace = true
 maker_engine.workspace = true
 maker_render.workspace = true
+maker_sculpt.workspace = true
 glam.workspace = true
 hecs.workspace = true
 serde.workspace = true

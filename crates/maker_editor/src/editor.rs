@@ -206,6 +206,9 @@ pub struct Editor {
     pub normales: crate::normal_ui::Normales,
     /// Ventana «Orden de escenas».
     pub ventana_escenas: bool,
+    /// Modo del visor (Objeto o Esculpir) y estado del esculpido.
+    pub modo: crate::esculpir::Modo,
+    pub esculpir: crate::esculpir::Esculpir,
 }
 
 impl Editor {
@@ -283,6 +286,8 @@ impl Editor {
             plantillas: BTreeMap::new(),
             normales: Default::default(),
             ventana_escenas: false,
+            modo: Default::default(),
+            esculpir: Default::default(),
         };
         let docs = ed.docs_ui();
         ed.undo.reset_con(&ed.scene, docs);
@@ -306,6 +311,8 @@ impl Editor {
             self.status = "No se guarda durante Play (los cambios de Play se descartan al detener)".into();
             return;
         }
+        // Una escultura abierta se hornea a su .glb antes de guardar la escena que lo usa.
+        crate::esculpir::hornear(self);
         match self.scene.save(&self.scene_path) {
             Ok(()) => {
                 self.dirty = false;
@@ -320,6 +327,7 @@ impl Editor {
         if self.is_playing() {
             self.stop();
         }
+        crate::esculpir::salir(self);
         let path = self.project.root.join(rel);
         match Scene::load(&path) {
             Ok(mut s) => {
@@ -573,6 +581,11 @@ impl Editor {
         if self.is_playing() {
             return;
         }
+        // En el modo Esculpir, Ctrl+Z deshace trazos (el historial de la escena no se toca).
+        if crate::esculpir::activo(self) {
+            crate::esculpir::deshacer(self);
+            return;
+        }
         if let Some((label, f)) = self.undo.undo() {
             self.scene = Scene::from_file(&f.escena);
             self.aplicar_docs_ui(&f.ui);
@@ -582,6 +595,10 @@ impl Editor {
     }
     pub fn redo(&mut self) {
         if self.is_playing() {
+            return;
+        }
+        if crate::esculpir::activo(self) {
+            crate::esculpir::rehacer(self);
             return;
         }
         if let Some((label, f)) = self.undo.redo() {
@@ -616,6 +633,10 @@ impl Editor {
                 }
                 self.scene.insert(id, MeshRenderer::primitive(s));
             }
+            Create::Escultura => {
+                t.translation.y = t.translation.y.max(0.5);
+                self.scene.insert(id, MeshRenderer::primitive(PrimitiveShape::Sphere));
+            }
             Create::DirectionalLight => {
                 t.translation.y = 8.0;
                 t.set_euler_degrees(Vec3::new(-50.0, -30.0, 0.0));
@@ -640,6 +661,10 @@ impl Editor {
         self.scene.update_transforms();
         self.selection = Some(id);
         self.commit(&format!("Crear {name}"));
+        if what == Create::Escultura {
+            crate::esculpir::salir(self);
+            crate::esculpir::entrar(self);
+        }
         id
     }
 
@@ -707,6 +732,7 @@ impl Editor {
         if self.is_playing() {
             return;
         }
+        crate::esculpir::salir(self);
         self.commit("Antes de Play");
         let snapshot = self.scene.to_file();
         let ruta = escena.clone().unwrap_or_else(|| self.project.relative(&self.scene_path));
@@ -1215,6 +1241,8 @@ pub enum Create {
     DirectionalLight,
     PointLight,
     Camera,
+    /// Esfera lista para esculpir (entra en el modo Esculpir).
+    Escultura,
 }
 
 impl Create {
@@ -1226,6 +1254,7 @@ impl Create {
             Create::DirectionalLight => "Luz direccional",
             Create::PointLight => "Luz puntual",
             Create::Camera => "Cámara",
+            Create::Escultura => "Escultura",
         }
     }
 }

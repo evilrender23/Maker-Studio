@@ -54,6 +54,21 @@ pub enum Icon {
     /// Escena de arranque (primera del orden de escenas) y Play desde ella.
     Inicio,
     EstiloVisual,
+    /// Modo Esculpir y pinceles.
+    Esculpir,
+    PincelEstandar,
+    PincelArcilla,
+    PincelSuavizar,
+    PincelMover,
+    PincelInflar,
+    PincelPliegue,
+    PincelAplanar,
+    PincelPellizcar,
+    PincelPliegueFino,
+    PincelBloque,
+    PincelRecortar,
+    PincelCapa,
+    PincelEmpujar,
 }
 
 impl Icon {
@@ -101,6 +116,42 @@ impl Icon {
             Icon::Fuente => &px::FUENTE,
             Icon::Inicio => &px::INICIO,
             Icon::EstiloVisual => &px::ESTILO_VISUAL,
+            Icon::Esculpir => &px::ESCULPIR,
+            Icon::PincelEstandar => &px::PINCEL_ESTANDAR,
+            Icon::PincelArcilla => &px::PINCEL_ARCILLA,
+            Icon::PincelSuavizar => &px::PINCEL_SUAVIZAR,
+            Icon::PincelMover => &px::PINCEL_MOVER,
+            Icon::PincelInflar => &px::PINCEL_INFLAR,
+            Icon::PincelPliegue => &px::PINCEL_PLIEGUE,
+            Icon::PincelAplanar => &px::PINCEL_APLANAR,
+            Icon::PincelPellizcar => &px::PINCEL_PELLIZCAR,
+            Icon::PincelPliegueFino => &px::PINCEL_PLIEGUE_FINO,
+            Icon::PincelBloque => &px::PINCEL_BLOQUE,
+            Icon::PincelRecortar => &px::PINCEL_RECORTAR,
+            Icon::PincelCapa => &px::PINCEL_CAPA,
+            Icon::PincelEmpujar => &px::PINCEL_EMPUJAR,
+        }
+    }
+}
+
+impl Icon {
+    /// Icono de un pincel de esculpir.
+    pub fn pincel(b: maker_sculpt::Brush) -> Icon {
+        use maker_sculpt::Brush as B;
+        match b {
+            B::Standard => Icon::PincelEstandar,
+            B::Clay => Icon::PincelArcilla,
+            B::Smooth => Icon::PincelSuavizar,
+            B::Move => Icon::PincelMover,
+            B::Inflate => Icon::PincelInflar,
+            B::Crease => Icon::PincelPliegue,
+            B::Flatten => Icon::PincelAplanar,
+            B::Pinch => Icon::PincelPellizcar,
+            B::SharpCrease => Icon::PincelPliegueFino,
+            B::ClayBlock => Icon::PincelBloque,
+            B::Trim => Icon::PincelRecortar,
+            B::Layer => Icon::PincelCapa,
+            B::Nudge => Icon::PincelEmpujar,
         }
     }
 }
@@ -181,7 +232,8 @@ mod tests {
 
     #[test]
     fn iconos_de_16x16() {
-        for i in [Icon::Camara, Icon::Sol, Icon::Cubo, Icon::Toro, Icon::Modelo, Icon::Cerrar, Icon::Personaje, Icon::Biblioteca] {
+        let pinceles = maker_sculpt::Brush::ALL.map(Icon::pincel);
+        for i in [Icon::Camara, Icon::Sol, Icon::Cubo, Icon::Toro, Icon::Modelo, Icon::Cerrar, Icon::Personaje, Icon::Biblioteca, Icon::Esculpir].into_iter().chain(pinceles) {
             let p = rgba(i);
             assert_eq!(p.len(), 16 * 16 * 4);
             assert!(p.chunks(4).any(|c| c[3] == 255), "{i:?} vacío");

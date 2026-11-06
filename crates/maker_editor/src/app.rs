@@ -18,6 +18,8 @@ pub struct Auto {
     pub screenshot: Option<PathBuf>,
     pub frames: u32,
     pub select: Option<String>,
+    /// Escena a abrir en lugar de la principal.
+    pub scene: Option<String>,
     pub play: bool,
     pub tab: Option<BottomTab>,
     pub hold: Vec<Key>,
@@ -52,7 +54,11 @@ impl MakerApp {
         let mut hub = Hub::new();
         let ed = project.map(|p| {
             hub.config.touch(&p.root);
-            Editor::open(p, &rs)
+            let mut ed = Editor::open(p, &rs);
+            if let Some(s) = &auto.scene {
+                ed.open_scene(s);
+            }
+            ed
         });
         let upd = crate::update::Actualizador::default();
         // En capturas automáticas no se busca nada en segundo plano.

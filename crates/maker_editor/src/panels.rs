@@ -21,6 +21,8 @@ enum HAction {
     ToggleActive(EntityId),
     CreateChild(EntityId, Create),
     Focus(EntityId),
+    /// Modelo soltado desde Contenido o la Biblioteca (como hijo de una entidad).
+    AddModel(String, Option<EntityId>),
 }
 
 pub fn create_menu(ui: &mut Ui) -> Option<Create> {
@@ -65,6 +67,9 @@ fn icon_for(ed: &Editor, id: EntityId) -> (crate::icons::Icon, Color32) {
     }
     if let Some(l) = ed.scene.get::<Light>(id) {
         return (if l.kind == LightKind::Directional { Icon::Sol } else { Icon::Bombilla }, theme::YELLOW);
+    }
+    if ed.scene.has::<Animator>(id) {
+        return (Icon::Personaje, theme::PURPLE);
     }
     let Some(m) = ed.scene.get::<MeshRenderer>(id) else { return (Icon::Vacio, theme::TEXT3) };
     let icon = match &m.mesh {
@@ -118,6 +123,9 @@ pub fn hierarchy(ed: &mut Editor, ui: &mut Ui) {
         let resp = ui.interact(rest, ui.scope_id().with("hier-empty"), egui::Sense::click());
         if let Some(p) = resp.dnd_release_payload::<EntityId>() {
             actions.push(HAction::Reparent(*p, None));
+        }
+        if let Some(p) = resp.dnd_release_payload::<AssetDrag>() {
+            actions.push(HAction::AddModel(p.0.clone(), None));
         }
         if resp.clicked() {
             ed.selection = None;
@@ -178,6 +186,15 @@ fn apply(ed: &mut Editor, a: HAction) {
         HAction::Focus(id) => {
             ed.selection = Some(id);
             ed.focus_selected();
+        }
+        HAction::AddModel(path, parent) => {
+            let id = ed.add_model(&path);
+            if let Some(p) = parent {
+                ed.scene.set_parent(id, Some(p), false);
+                ed.scene.set_transform(id, Transform { translation: Vec3::ZERO, ..ed.scene.transform(id) });
+                ed.scene.update_transforms();
+                ed.commit("Añadir hijo");
+            }
         }
     }
 }
@@ -243,6 +260,12 @@ fn row(ed: &mut Editor, ui: &mut Ui, id: EntityId, actions: &mut Vec<HAction>) {
         } else {
             ui.painter().rect_stroke(r, 3.0, stroke, egui::StrokeKind::Inside);
         }
+    }
+    if let Some(p) = resp.dnd_release_payload::<AssetDrag>() {
+        actions.push(HAction::AddModel(p.0.clone(), Some(id)));
+    }
+    if resp.dnd_hover_payload::<AssetDrag>().is_some() {
+        ui.painter().rect_stroke(resp.rect, 3.0, egui::Stroke::new(2.0, theme::ACCENT), egui::StrokeKind::Inside);
     }
     if let Some(p) = resp.dnd_release_payload::<EntityId>()
         && *p != id
@@ -312,7 +335,7 @@ fn color4(ui: &mut Ui, c: &mut [f32; 4]) -> egui::Response {
     r
 }
 
-fn component_header(ui: &mut Ui, title: &str, id: &str, removable: bool) -> (bool, bool) {
+pub(crate) fn component_header(ui: &mut Ui, title: &str, id: &str, removable: bool) -> (bool, bool) {
     let mut remove = false;
     let state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), ui.make_persistent_id(id), true);
     let open = state.is_open();
@@ -427,6 +450,7 @@ pub fn inspector(ed: &mut Editor, ui: &mut Ui) {
         rigid_body(ed, ui, id);
         collider(ed, ui, id);
         scripts(ed, ui, id);
+        crate::animator_ui::animator(ed, ui, id);
 
         ui.add_space(6.0);
         ui.vertical_centered_justified(|ui| {
@@ -463,6 +487,10 @@ fn add_component_menu(ed: &mut Editor, ui: &mut Ui, id: EntityId) {
             s.insert(id, Collider::new(ColliderShape::fit(shape)));
         }
         added = Some("Cuerpo rígido");
+    }
+    if !s.has::<Animator>(id) && ui.button("Animador").clicked() {
+        s.insert(id, crate::animator_ui::default_for(s, id));
+        added = Some("Animador");
     }
     if !s.has::<Collider>(id) && ui.button("Colisionador").clicked() {
         let shape = s.get::<MeshRenderer>(id).and_then(|m| if let MeshSource::Primitive(p) = m.mesh { Some(p) } else { None }).unwrap_or(PrimitiveShape::Cube);
@@ -957,6 +985,10 @@ pub fn bottom(ed: &mut Editor, ui: &mut Ui) {
     let errors = log::since(0).iter().filter(|e| e.level == log::Level::Error).count();
     ui.horizontal(|ui| {
         ui.selectable_value(&mut ed.bottom_tab, BottomTab::Content, "Contenido");
+        let lib = ed.bottom_tab == BottomTab::Library;
+        if ui.add(egui::Button::selectable(lib, (crate::icons::image(ui.ctx(), crate::icons::Icon::Biblioteca, if lib { theme::ACCENT } else { theme::TEXT2 }), "Biblioteca"))).clicked() {
+            ed.bottom_tab = BottomTab::Library;
+        }
         let console_label = if errors > 0 { format!("Consola · {errors} errores") } else if new_logs > 0 && ed.bottom_tab != BottomTab::Console { format!("Consola · {new_logs}") } else { "Consola".to_string() };
         ui.selectable_value(&mut ed.bottom_tab, BottomTab::Console, console_label);
         let script_label = match &ed.script {
@@ -968,6 +1000,7 @@ pub fn bottom(ed: &mut Editor, ui: &mut Ui) {
     ui.separator();
     match ed.bottom_tab {
         BottomTab::Content => content(ed, ui),
+        BottomTab::Library => crate::biblioteca_ui::show(ed, ui),
         BottomTab::Console => console(ed, ui),
         BottomTab::Script => script_editor(ed, ui),
     }

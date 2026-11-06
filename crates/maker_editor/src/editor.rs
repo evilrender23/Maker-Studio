@@ -17,6 +17,7 @@ use std::time::{Duration, Instant, SystemTime};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BottomTab {
     Content,
+    Library,
     Console,
     Script,
 }
@@ -148,6 +149,10 @@ pub struct Editor {
     /// Edición en curso del inspector; se confirma al soltar el ratón.
     pub pending_edit: Option<String>,
     pub pending_save_script: bool,
+    /// Navegador de la biblioteca integrada.
+    pub biblioteca: crate::biblioteca_ui::BibliotecaUi,
+    /// Animación en modo edición (vista previa del Animator seleccionado).
+    pub animation: maker_engine::animation::Animation,
 }
 
 impl Editor {
@@ -200,6 +205,8 @@ impl Editor {
             dirty: false,
             pending_edit: None,
             pending_save_script: false,
+            biblioteca: Default::default(),
+            animation: Default::default(),
         };
         ed.undo.reset(&ed.scene);
         ed.reload_scripts(false);
@@ -350,6 +357,7 @@ impl Editor {
         let pos = self.cam.pivot;
         self.scene.set_transform(id, Transform::from_translation(Vec3::new(pos.x, 0.0, pos.z)));
         self.scene.insert(id, MeshRenderer { mesh: MeshSource::Model(rel.to_string()), material: Material::default(), cast_shadows: true });
+        crate::biblioteca_ui::decorate_new_model(self, id, rel);
         self.scene.update_transforms();
         self.selection = Some(id);
         self.commit(&format!("Añadir modelo {name}"));
@@ -397,7 +405,8 @@ impl Editor {
         }
         self.commit("Antes de Play");
         let snapshot = self.scene.to_file();
-        let runtime = Runtime::start(&mut self.scene, self.lib.clone());
+        let mut runtime = Runtime::start(&mut self.scene, self.lib.clone());
+        runtime.project_root = Some(self.project.root.clone());
         self.play = Some(PlaySession { runtime, snapshot, selection: self.selection });
         self.game_focus = true;
         self.input.release_all();
@@ -435,8 +444,13 @@ impl Editor {
     }
 
     pub fn tick(&mut self, dt: f32) {
-        if let Some(p) = &mut self.play {
-            p.runtime.tick(&mut self.scene, &self.input, dt);
+        match &mut self.play {
+            Some(p) => p.runtime.tick(&mut self.scene, &self.input, dt),
+            // Fuera de Play solo avanza el Animator seleccionado (vista previa).
+            None => {
+                let sel = self.selection;
+                self.animation.update(&mut self.scene, Some(&self.project.root), dt, |id| Some(id) == sel);
+            }
         }
         self.input.end_frame();
         self.poll_build();
@@ -630,6 +644,12 @@ impl Editor {
         std::fs::copy(self.project.root.join(maker_engine::project::PROJECT_FILE), out.join(maker_engine::project::PROJECT_FILE)).map_err(|e| e.to_string())?;
         for dir in ["scenes", "assets"] {
             copy_dir(&self.project.root.join(dir), &out.join(dir))?;
+        }
+        // Solo lo que usan las escenas de la biblioteca integrada, junto al ejecutable.
+        let scenes: Vec<_> = self.project.scenes().iter().filter_map(|s| Scene::load(&self.project.root.join(s)).ok()).map(|s| s.to_file()).collect();
+        let copied = maker_engine::biblioteca::export_used(&scenes, &out)?;
+        if !copied.is_empty() {
+            log::info("editor", format!("biblioteca: {} archivos copiados al juego", copied.len()));
         }
         let lib = self.project.script_lib_path();
         if lib.exists() {

@@ -139,6 +139,8 @@ impl eframe::App for Player {
             self.input.set_key(*k, true);
         }
         self.runtime.tick(&mut self.scene, &self.input, dt);
+        // Cambio de escena pedido por un script: al terminar el fotograma.
+        self.runtime.aplicar_cambio_escena(&mut self.scene);
         self.input.end_frame();
         self.cursor.modo_script(self.runtime.cursor_mode, true);
         let foco = ctx.input(|i| i.focused);
@@ -253,7 +255,8 @@ fn main() -> eframe::Result<()> {
             std::process::exit(1);
         }
     };
-    let scene_path = scene_path.unwrap_or_else(|| project.main_scene_path());
+    // Sin --scene arranca en la primera escena activa del orden de escenas.
+    let scene_path = scene_path.map(|p| p.canonicalize().unwrap_or(p)).unwrap_or_else(|| project.main_scene_path());
     let mut scene = match Scene::load(&scene_path) {
         Ok(s) => s,
         Err(e) => {
@@ -283,6 +286,7 @@ fn main() -> eframe::Result<()> {
             renderer.project_root = Some(project.root.clone());
             let mut runtime = Runtime::start_en(&mut scene, lib, Some(&project.root));
             runtime.project_root = Some(project.root.clone());
+            runtime.fijar_escena(&project.relative(&scene_path));
             // Las capturas automáticas no se quedan con el ratón del escritorio.
             let mut cursor = CursorCapture::default();
             cursor.iniciar(project.file.capturar_raton && screenshot.is_none(), true);

@@ -51,6 +51,8 @@ pub enum Icon {
     Tema,
     Plantilla,
     Fuente,
+    /// Escena de arranque (primera del orden de escenas) y Play desde ella.
+    Inicio,
 }
 
 impl Icon {
@@ -96,6 +98,7 @@ impl Icon {
             Icon::Tema => &px::TEMA,
             Icon::Plantilla => &px::PLANTILLA,
             Icon::Fuente => &px::FUENTE,
+            Icon::Inicio => &px::INICIO,
         }
     }
 }

@@ -28,7 +28,9 @@ scripts de cada juego.
   archivos del sistema (uno o varios, o carpetas enteras; Ctrl+I) o soltándolos
   sobre Contenido o el visor (los `.gltf` se llevan su `.bin` y texturas), consola, editor de scripts con
   resaltado, deshacer/rehacer, Play / Pausa / Paso con la escena restaurada al
-  parar, ejecutar en ventana aparte y exportar el juego.
+  parar, orden de escenas (la primera arranca el juego; los scripts cambian de
+  escena por nombre, índice o siguiente/anterior), ejecutar en ventana aparte
+  y exportar el juego.
 - **Motor** (`maker_engine`): ECS `hecs`, escenas `.mscene` en JSON legible,
   jerarquía padre/hijo, primitivas (cubo, esfera, plano, cilindro, cono,
   cápsula, toro) e importación **glTF/GLB**, física **Rapier** (cuerpos
@@ -179,7 +181,7 @@ que sigue al jugador. Pulsa **F7** para compilar sus scripts y **▶ Play**.
 
 ```
 MiJuego/
-├── project.maker          nombre y escena principal
+├── project.maker          nombre y orden de escenas (la primera activa arranca)
 ├── scenes/main.mscene     escenas (JSON)
 ├── assets/models/         .gltf / .glb
 └── scripts/               crate de Rust → biblioteca dinámica
@@ -188,7 +190,7 @@ MiJuego/
 ```
 
 **Archivo → Exportar juego** crea `export/<nombre>/` con el ejecutable, las
-escenas, los assets, la biblioteca de scripts y los archivos de la biblioteca
+escenas activas del orden de escenas, los assets, la biblioteca de scripts y los archivos de la biblioteca
 integrada que usan sus escenas; ese ejecutable abre el juego sin argumentos.
 
 ## Pruebas

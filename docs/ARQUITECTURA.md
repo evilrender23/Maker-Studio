@@ -29,7 +29,8 @@ Maker Studio es un workspace de Cargo con cinco crates:
 | Animación esquelética con reasignación por nombre de hueso | Unreal (IK Retargeter), Godot (`BoneMap`) | Componente `Animator`; skinning en GPU con una paleta de huesos por entidad y fotograma. |
 | Interfaz como entidades con rectángulo anclado, contenedores y estilos | Unity UGUI (`RectTransform`, `CanvasScaler`, `CanvasGroup`), Godot (`Control`, `Container`, `Theme`), Unreal UMG | Componentes `Lienzo`, `RectUi`, `Contenedor` y `WidgetUi` en el ECS; estilos y temas JSON del proyecto con herencia y retoques locales; plantillas `.mui` como prefabs. Ver [INTERFAZ.md](INTERFAZ.md). |
 | Lanzar el juego aparte del editor | Unreal "Standalone Game" | Archivo → Ejecutar en ventana aparte (`maker-player`). |
-| Exportar el juego | los tres | Archivo → Exportar juego: reproductor + escenas + assets + biblioteca de scripts en `export/<nombre>/`. |
+| Orden de escenas y cambio de escena | Unity (*Scenes In Build*, `SceneManager.LoadScene`), Godot (`change_scene_to_file`) | `escenas` en `project.maker` (`escenas.rs`); la primera activa arranca. Los scripts piden el cambio y el host lo aplica al acabar el fotograma (`Runtime::aplicar_cambio_escena`): escena, física y scripts nuevos con la misma biblioteca, sin reentrada. |
+| Exportar el juego | los tres | Archivo → Exportar juego: reproductor + escenas activas del orden + assets + biblioteca de scripts en `export/<nombre>/`. |
 | Project Hub | Unity Hub, gestor de proyectos de Godot | Pantalla inicial con recientes, nuevo (demo o básico) y abrir. |
 | Controles de viewport | Unity / Unreal | Clic derecho + WASDQE para volar, Alt+clic para orbitar, botón central para desplazar, W/E/R para gizmos, F para encuadrar. |
 

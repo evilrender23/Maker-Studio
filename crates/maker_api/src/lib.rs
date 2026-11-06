@@ -421,6 +421,22 @@ pub struct HostApi {
     pub ui_set_theme: unsafe extern "C" fn(*mut c_void, *const u8, usize),
     /// Escala del tiempo del juego (0 = pausa; la interfaz sigue respondiendo).
     pub set_time_scale: unsafe extern "C" fn(*mut c_void, f32),
+    // ── Escenas (orden de escenas del proyecto). Los cambios se aplican al terminar el fotograma ──
+    /// Pide cargar una escena activa por nombre de archivo (`Nivel2`) o ruta relativa (UTF-8). `false` si no la hay.
+    pub load_scene: unsafe extern "C" fn(*mut c_void, *const u8, usize) -> bool,
+    /// Pide cargar la escena activa número `i` (desde 0). `false` si no existe.
+    pub load_scene_index: unsafe extern "C" fn(*mut c_void, i64) -> bool,
+    /// Siguiente / anterior del orden. En los extremos no hace nada (aviso en la consola) y devuelve `false`.
+    pub next_scene: unsafe extern "C" fn(*mut c_void) -> bool,
+    pub previous_scene: unsafe extern "C" fn(*mut c_void) -> bool,
+    /// Vuelve a cargar la escena actual desde su archivo.
+    pub reload_scene: unsafe extern "C" fn(*mut c_void),
+    /// Índice de la escena actual entre las activas; -1 si no está en el orden.
+    pub scene_index: unsafe extern "C" fn(*mut c_void) -> i64,
+    /// Número de escenas activas.
+    pub scene_count: unsafe extern "C" fn(*mut c_void) -> u32,
+    /// Copia hasta `cap` bytes de la ruta relativa de la escena actual en `buf` y devuelve su longitud total.
+    pub scene_path: unsafe extern "C" fn(*mut c_void, *mut u8, usize) -> usize,
 }
 
 /// Tipos de propiedad exportada (como `[SerializeField]` / `@export`).
@@ -774,6 +790,56 @@ impl<'a> Ctx<'a> {
     pub fn set_time_scale(&mut self, scale: f32) {
         unsafe { (self.api.set_time_scale)(self.api.ctx, scale) }
     }
+
+    // — escenas —
+    /// Carga otra escena del orden de escenas por nombre de archivo (`"Nivel2"`)
+    /// o ruta relativa (`"scenes/nivel2.mscene"`). El cambio se aplica al
+    /// terminar el fotograma: el resto de scripts sigue corriendo en la escena
+    /// actual. Devuelve `false` (y avisa en la consola) si no hay ninguna activa así.
+    pub fn load_scene(&mut self, name_or_path: &str) -> bool {
+        unsafe { (self.api.load_scene)(self.api.ctx, name_or_path.as_ptr(), name_or_path.len()) }
+    }
+    /// Carga la escena número `i` (desde 0) de las activas del orden de escenas.
+    pub fn load_scene_index(&mut self, i: usize) -> bool {
+        unsafe { (self.api.load_scene_index)(self.api.ctx, i.min(i64::MAX as usize) as i64) }
+    }
+    /// Siguiente escena del orden. En la última no hace nada (no da la vuelta):
+    /// para volver a la primera, `load_scene_index(0)`.
+    pub fn next_scene(&mut self) -> bool {
+        unsafe { (self.api.next_scene)(self.api.ctx) }
+    }
+    /// Escena anterior del orden. En la primera no hace nada.
+    pub fn previous_scene(&mut self) -> bool {
+        unsafe { (self.api.previous_scene)(self.api.ctx) }
+    }
+    /// Vuelve a cargar la escena actual (como al empezar).
+    pub fn reload_scene(&mut self) {
+        unsafe { (self.api.reload_scene)(self.api.ctx) }
+    }
+    /// Posición de la escena actual entre las activas (`None` si no está en el orden).
+    pub fn scene_index(&self) -> Option<usize> {
+        let i = unsafe { (self.api.scene_index)(self.api.ctx) };
+        usize::try_from(i).ok()
+    }
+    /// Número de escenas activas en el orden de escenas.
+    pub fn scene_count(&self) -> usize {
+        unsafe { (self.api.scene_count)(self.api.ctx) as usize }
+    }
+    /// Ruta relativa de la escena actual (`scenes/main.mscene`).
+    pub fn scene_path(&self) -> String {
+        let n = unsafe { (self.api.scene_path)(self.api.ctx, std::ptr::null_mut(), 0) };
+        let mut buf = vec![0u8; n];
+        let n = unsafe { (self.api.scene_path)(self.api.ctx, buf.as_mut_ptr(), buf.len()) }.min(buf.len());
+        buf.truncate(n);
+        String::from_utf8(buf).unwrap_or_default()
+    }
+    /// Nombre de la escena actual (el del archivo sin extensión).
+    pub fn scene_name(&self) -> String {
+        let p = self.scene_path();
+        let f = p.rsplit('/').next().unwrap_or(&p);
+        f.strip_suffix(".mscene").unwrap_or(f).to_string()
+    }
+
     /// Sustituye lo que dibuja el widget personalizado `e`. Lo dibujado se
     /// mantiene hasta la siguiente llamada.
     pub fn ui_draw(&mut self, e: Entity, f: impl FnOnce(&mut UiPainter)) {

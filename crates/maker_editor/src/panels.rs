@@ -390,7 +390,7 @@ fn axis_drag(ui: &mut Ui, v: &mut Vec3, speed: f64, suffix: &str) -> egui::Respo
 
 /// El selector de color de egui convierte a HSVA y vuelve cada fotograma, lo
 /// que altera los decimales aunque no se toque: solo se escribe al cambiar.
-fn color3(ui: &mut Ui, c: &mut [f32; 3]) -> egui::Response {
+pub(crate) fn color3(ui: &mut Ui, c: &mut [f32; 3]) -> egui::Response {
     let mut tmp = *c;
     let r = ui.color_edit_button_rgb(&mut tmp);
     if r.changed() {
@@ -625,7 +625,7 @@ fn mesh_renderer(ed: &mut Editor, ui: &mut Ui, id: EntityId) {
             }
         });
         ui.end_row();
-        material_fields(ui, &mut mr.material);
+        material_fields(ui, &mut mr.material, ed.scene.env.global_shading.model.is_some());
         ui.label("Proyecta sombras");
         ui.checkbox(&mut mr.cast_shadows, "");
         ui.end_row();
@@ -638,8 +638,9 @@ fn mesh_renderer(ed: &mut Editor, ui: &mut Ui, id: EntityId) {
 }
 
 /// Campos del material dentro de la rejilla del inspector: el modelo de
-/// sombreado y solo los parámetros que ese modelo usa.
-fn material_fields(ui: &mut Ui, m: &mut Material) {
+/// sombreado y solo los parámetros que ese modelo usa. Con sombreado global
+/// en la escena aparece la excepción.
+fn material_fields(ui: &mut Ui, m: &mut Material, global: bool) {
     ui.label("Sombreado");
     egui::ComboBox::from_id_salt("mat-shading").selected_text(m.shading.label()).width(170.0).show_ui(ui, |ui| {
         for s in ShadingModel::ALL {
@@ -647,17 +648,33 @@ fn material_fields(ui: &mut Ui, m: &mut Material) {
         }
     });
     ui.end_row();
+    if global || m.ignore_global {
+        ui.label("Ignorar sombreado global");
+        ui.checkbox(&mut m.ignore_global, "").on_hover_text("Conserva su propio modelo aunque la escena fuerce otro");
+        ui.end_row();
+    }
     ui.label(if m.shading == ShadingModel::Hatching { "Papel" } else { "Color base" });
     color4(ui, &mut m.base_color);
     ui.end_row();
-    let st = &mut m.style;
-    match m.shading {
+    shading_params(ui, m.shading, &mut m.style, &mut m.metallic, &mut m.roughness);
+    ui.label("Emisión");
+    ui.horizontal(|ui| {
+        color3(ui, &mut m.emissive);
+        ui.add(egui::DragValue::new(&mut m.emissive_strength).speed(0.05).range(0.0..=100.0).prefix("× "));
+    });
+    ui.end_row();
+}
+
+/// Parámetros de un modelo de sombreado (material o sombreado global), en
+/// una rejilla de dos columnas.
+pub(crate) fn shading_params(ui: &mut Ui, shading: ShadingModel, st: &mut StyleParams, metallic: &mut f32, roughness: &mut f32) {
+    match shading {
         ShadingModel::Pbr => {
             ui.label("Metálico");
-            ui.add(egui::Slider::new(&mut m.metallic, 0.0..=1.0));
+            ui.add(egui::Slider::new(metallic, 0.0..=1.0));
             ui.end_row();
             ui.label("Rugosidad");
-            ui.add(egui::Slider::new(&mut m.roughness, 0.0..=1.0));
+            ui.add(egui::Slider::new(roughness, 0.0..=1.0));
             ui.end_row();
         }
         ShadingModel::Toon => {
@@ -697,22 +714,16 @@ fn material_fields(ui: &mut Ui, m: &mut Material) {
         }
         ShadingModel::Unlit => {}
     }
-    if m.shading.has_outline() {
+    if shading.has_outline() {
         ui.label("Contorno");
         ui.horizontal(|ui| {
-            if m.shading == ShadingModel::Toon {
+            if shading == ShadingModel::Toon {
                 color3(ui, &mut st.outline_color);
             }
             ui.add(egui::DragValue::new(&mut st.outline_width).speed(0.05).range(0.0..=20.0).suffix(" px"));
         });
         ui.end_row();
     }
-    ui.label("Emisión");
-    ui.horizontal(|ui| {
-        color3(ui, &mut m.emissive);
-        ui.add(egui::DragValue::new(&mut m.emissive_strength).speed(0.05).range(0.0..=100.0).prefix("× "));
-    });
-    ui.end_row();
 }
 
 fn light(ed: &mut Editor, ui: &mut Ui, id: EntityId) {
@@ -1024,7 +1035,7 @@ fn scripts(ed: &mut Editor, ui: &mut Ui, id: EntityId) {
 fn environment(ed: &mut Editor, ui: &mut Ui) {
     ui.label(RichText::new("Entorno de la escena").strong());
     ui.add_space(4.0);
-    let mut env = ed.scene.env;
+    let mut env = ed.scene.env.clone();
     egui::Grid::new("env-grid").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
         ui.label("Cielo (cénit)");
         color3(ui, &mut env.sky_top);
@@ -1044,9 +1055,6 @@ fn environment(ed: &mut Editor, ui: &mut Ui) {
             ui.add(egui::DragValue::new(&mut env.fog_density).speed(0.0005).range(0.0..=1.0).max_decimals(4));
         });
         ui.end_row();
-        ui.label("Exposición");
-        ui.add(egui::Slider::new(&mut env.exposure, 0.05..=8.0).logarithmic(true));
-        ui.end_row();
         ui.label("Gravedad");
         ui.horizontal(|ui| {
             let mut g = Vec3::from(env.gravity);
@@ -1055,10 +1063,17 @@ fn environment(ed: &mut Editor, ui: &mut Ui) {
         });
         ui.end_row();
     });
+    ui.add_space(10.0);
+    section_label(ui, "Sombreado global");
+    crate::postproceso_ui::global_shading(ui, &mut env.global_shading);
+    ui.add_space(10.0);
+    section_label(ui, "Posprocesado");
+    let accion = crate::postproceso_ui::post_stack(ui, &mut env, &mut ed.renderer, &ed.project.root);
     if env != ed.scene.env {
         ed.scene.env = env;
         ed.pending_edit = Some("Editar entorno".into());
     }
+    crate::postproceso_ui::apply(ed, accion);
     ui.add_space(10.0);
     section_label(ui, "Proyecto");
     ui.label(format!("{} · {}", ed.project.name(), ed.project.root.display()));

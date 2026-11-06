@@ -133,6 +133,8 @@ pub struct Editor {
     pub show_game_view: bool,
     pub show_grid: bool,
     pub shadows: bool,
+    /// Posprocesado en el visor (Play incluido).
+    pub post_fx: bool,
     pub bottom_tab: BottomTab,
     pub script: Option<OpenScript>,
     pub hierarchy_filter: String,
@@ -201,6 +203,7 @@ impl Editor {
             show_game_view: true,
             show_grid: true,
             shadows: true,
+            post_fx: true,
             bottom_tab: BottomTab::Content,
             script: None,
             hierarchy_filter: String::new(),
@@ -709,6 +712,19 @@ impl Editor {
         let copied = maker_engine::biblioteca::export_used(&scenes, &out)?;
         if !copied.is_empty() {
             log::info("editor", format!("biblioteca: {} archivos copiados al juego", copied.len()));
+        }
+        // Efectos de posprocesado propios y LUT que usan las escenas.
+        for rel in maker_engine::postproceso::post_files_used(scenes.iter().map(|s| &s.environment)) {
+            let (src, dst) = (self.project.root.join(&rel), out.join(&rel));
+            if dst.exists() {
+                continue;
+            }
+            if !src.is_file() {
+                log::warn("editor", format!("posprocesado: falta {rel}"));
+                continue;
+            }
+            std::fs::create_dir_all(dst.parent().unwrap()).map_err(|e| e.to_string())?;
+            std::fs::copy(&src, &dst).map_err(|e| format!("{rel}: {e}"))?;
         }
         let lib = self.project.script_lib_path();
         if lib.exists() {

@@ -32,7 +32,7 @@ struct Globals {
     fog: vec4<f32>,          // rgb, densidad
     params: vec4<f32>,       // x: nº luces puntuales, y: exposición, z: tiempo, w: tamaño del mapa de sombras
     points: array<PointLight, 16>,
-    viewport: vec4<f32>,     // ancho, alto (px)
+    viewport: vec4<f32>,     // ancho, alto (px), curva de tonemap (0 ACES, 1 AgX, 2 recorte, 3 HDR sin curva)
 };
 
 struct Object {
@@ -143,6 +143,43 @@ fn aces(x: vec3<f32>) -> vec3<f32> {
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
+fn agx_contrast(x: vec3<f32>) -> vec3<f32> {
+    let x2 = x * x;
+    let x4 = x2 * x2;
+    return 15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4 - 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232;
+}
+
+// AgX (aproximación polinómica de Benjamin Wrensch); igual que en post_efectos.wgsl.
+fn agx(c: vec3<f32>) -> vec3<f32> {
+    let m_in = mat3x3<f32>(
+        vec3<f32>(0.842479062253094, 0.0423282422610123, 0.0423756549057051),
+        vec3<f32>(0.0784335999999992, 0.878468636469772, 0.0784336),
+        vec3<f32>(0.0792237451477643, 0.0791661274605434, 0.879142973793104),
+    );
+    let m_out = mat3x3<f32>(
+        vec3<f32>(1.19687900512017, -0.0528968517574562, -0.0529716355144438),
+        vec3<f32>(-0.0980208811401368, 1.15190312990417, -0.0980434501171241),
+        vec3<f32>(-0.0990297440797205, -0.0989611768448433, 1.15107367264116),
+    );
+    let min_ev = -12.47393;
+    let max_ev = 4.026069;
+    var v = m_in * max(c, vec3<f32>(1e-10));
+    v = clamp(log2(v), vec3<f32>(min_ev), vec3<f32>(max_ev));
+    v = (v - min_ev) / (max_ev - min_ev);
+    v = m_out * agx_contrast(v);
+    return clamp(pow(max(v, vec3<f32>(0.0)), vec3<f32>(2.2)), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+// Curva elegida por el posprocesado (uniforme: sin divergencia).
+fn tonemap(c: vec3<f32>) -> vec3<f32> {
+    switch u32(g.viewport.z) {
+        case 0u: { return aces(c); }
+        case 1u: { return agx(c); }
+        case 2u: { return clamp(c, vec3<f32>(0.0), vec3<f32>(1.0)); }
+        default: { return c; }
+    }
+}
+
 fn shadow_factor(world: vec3<f32>, n: vec3<f32>) -> f32 {
     if (g.sun_color.w < 0.5) {
         return 1.0;
@@ -244,7 +281,7 @@ fn fs_main(in: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
         color += obj.emissive.rgb * obj.emissive.w;
         color = apply_fog(color, in.world);
     }
-    return finish(aces(color * g.params.y), base.a);
+    return finish(tonemap(color * g.params.y), base.a);
 }
 
 // Niebla exponencial.
@@ -341,7 +378,7 @@ fn fs_toon(in: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     }
     color += obj.emissive.rgb * obj.emissive.w;
     color = apply_fog(color, in.world);
-    return finish(aces(color * g.params.y), base.a);
+    return finish(tonemap(color * g.params.y), base.a);
 }
 
 // ───────────────────────────── Plumilla (hatching) ─────────────────────────────
@@ -394,7 +431,7 @@ fn fs_hatch(in: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
     var color = mix(albedo, obj.outline.rgb, ink);
     color += obj.emissive.rgb * obj.emissive.w;
     color = apply_fog(color, in.world);
-    return finish(aces(color * g.params.y), base.a);
+    return finish(tonemap(color * g.params.y), base.a);
 }
 
 // ───────────────────────────── Contorno de casco invertido ─────────────────────────────
@@ -521,7 +558,7 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
         let s = max(dot(dir, -normalize(g.sun_dir.xyz)), 0.0);
         c += g.sun_color.rgb * (pow(s, 900.0) * 4.0 + pow(s, 12.0) * 0.06);
     }
-    return vec4<f32>(aces(c * g.params.y), 1.0);
+    return vec4<f32>(tonemap(c * g.params.y), 1.0);
 }
 
 // ───────────────────────────── Rejilla del editor ─────────────────────────────

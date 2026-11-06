@@ -259,6 +259,7 @@ fn host_api(ctx: &mut HostCtx) -> HostApi {
         play_animation: h_play_animation,
         set_animation_speed: h_set_animation_speed,
         set_cursor_mode: h_set_cursor_mode,
+        set_global_shading: h_set_global_shading,
     }
 }
 
@@ -396,6 +397,17 @@ unsafe extern "C" fn h_set_color(c: *mut c_void, e: Entity, rgba: maker_api::Rgb
         m.material.base_color = [rgba.r, rgba.g, rgba.b, rgba.a];
     }
 }
+unsafe extern "C" fn h_set_global_shading(c: *mut c_void, code: u32) {
+    let c = unsafe { cx(c) };
+    if code == u32::MAX {
+        c.scene.env.global_shading.model = None;
+        return;
+    }
+    match ShadingModel::from_api(code) {
+        Some(m) => c.scene.env.global_shading.model = Some(m),
+        None => log::warn("script", format!("set_global_shading: modelo desconocido {code}")),
+    }
+}
 unsafe extern "C" fn h_set_shading(c: *mut c_void, e: Entity, code: u32) {
     let c = unsafe { cx(c) };
     let Some(model) = ShadingModel::from_api(code) else {
@@ -488,6 +500,14 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct GlobalToon;
+    impl Script for GlobalToon {
+        fn update(&mut self, ctx: &mut Ctx) {
+            ctx.set_global_shading(if ctx.frame == 0 { Some(Shading::Hatching) } else { None });
+        }
+    }
+
+    #[derive(Default)]
     struct Dancer;
     impl Script for Dancer {
         fn start(&mut self, ctx: &mut Ctx) {
@@ -507,7 +527,7 @@ mod tests {
         }
     }
 
-    maker_api::script_library!(TEST_LIB; Spinner, Spawner, Panicker, Toonify, Dancer, MenuCursor);
+    maker_api::script_library!(TEST_LIB; Spinner, Spawner, Panicker, Toonify, Dancer, MenuCursor, GlobalToon);
 
     #[test]
     fn scripts_request_cursor_mode() {
@@ -551,6 +571,19 @@ mod tests {
         let mut rt = Runtime::start(&mut s, Some(lib));
         rt.tick(&mut s, &Input::default(), 1.0 / 60.0);
         assert_eq!(s.get::<MeshRenderer>(cube).unwrap().material.shading, ShadingModel::Toon);
+    }
+
+    #[test]
+    fn scripts_set_global_shading() {
+        let lib = Arc::new(ScriptLib::from_static(&TEST_LIB).unwrap());
+        let mut s = Scene::starter();
+        let cube = s.find_by_name("Cubo").unwrap();
+        s.insert(cube, Scripts(vec![ScriptSlot { name: "GlobalToon".into(), enabled: true, ..Default::default() }]));
+        let mut rt = Runtime::start(&mut s, Some(lib));
+        rt.tick(&mut s, &Input::default(), 1.0 / 60.0);
+        assert_eq!(s.env.global_shading.model, Some(ShadingModel::Hatching));
+        rt.tick(&mut s, &Input::default(), 1.0 / 60.0);
+        assert_eq!(s.env.global_shading.model, None);
     }
 
     #[test]

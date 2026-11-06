@@ -252,6 +252,9 @@ pub struct Material {
     pub emissive_strength: f32,
     pub shading: ShadingModel,
     pub style: StyleParams,
+    /// Conserva su propio modelo aunque la escena tenga sombreado global.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub ignore_global: bool,
 }
 
 /// Forma en disco: acepta escenas antiguas (`unlit: true`, sin `shading`).
@@ -268,6 +271,8 @@ struct MaterialFile {
     shading: ShadingModel,
     #[serde(default)]
     style: StyleParams,
+    #[serde(default)]
+    ignore_global: bool,
 }
 
 impl From<MaterialFile> for Material {
@@ -280,6 +285,7 @@ impl From<MaterialFile> for Material {
             emissive_strength: f.emissive_strength,
             shading: if f.unlit { ShadingModel::Unlit } else { f.shading },
             style: f.style,
+            ignore_global: f.ignore_global,
         }
     }
 }
@@ -294,6 +300,7 @@ impl Default for Material {
             emissive_strength: 0.0,
             shading: ShadingModel::Pbr,
             style: StyleParams::default(),
+            ignore_global: false,
         }
     }
 }

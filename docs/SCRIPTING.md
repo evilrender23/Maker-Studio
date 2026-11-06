@@ -61,7 +61,7 @@ instancia; el botón ↺ vuelve al valor por defecto del código.
 | Tiempo       | `ctx.dt`, `ctx.time`, `ctx.frame`, `ctx.entity` |
 | Consola      | `log`, `warn`, `error` |
 | Transform    | `position`, `set_position`, `translate`, `rotation`, `set_rotation`, `rotate_y`, `rotate_local`, `scale`, `set_scale` (posición y rotación en espacio mundo) |
-| Otras        | `find(nombre)`, `exists`, `position_of`, `set_position_of`, `rotation_of`, `set_rotation_of`, `set_color`, `set_shading(e, Shading::Toon)`, `spawn(Primitive, pos, flags)`, `destroy` |
+| Otras        | `find(nombre)`, `exists`, `position_of`, `set_position_of`, `rotation_of`, `set_rotation_of`, `set_color`, `set_shading(e, Shading::Toon)`, `set_global_shading(Some(Shading::Toon))` (o `None`), `spawn(Primitive, pos, flags)`, `destroy` |
 | Animación    | `play_animation(e, "Walk_Loop", fundido_s)` (devuelve `false` si no hay Animador), `set_animation_speed(e, v)` |
 | Entrada      | `key_down`, `key_pressed`, `axis(neg, pos)`, `mouse_down`, `mouse_delta`, `set_cursor_mode(CursorMode::…)` |
 | Física       | `velocity`, `set_velocity`, `apply_impulse`, `apply_impulse_to`, `raycast(origen, dir, max)` |

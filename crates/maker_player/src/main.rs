@@ -158,7 +158,7 @@ impl eframe::App for Player {
                     }
                 }
             };
-            self.renderer.render(&self.scene, &view, &RenderOptions { shadows: true, ..Default::default() });
+            self.renderer.render(&self.scene, &view, &RenderOptions { shadows: true, post: true, ..Default::default() });
             if let Some(v) = self.renderer.output_view() {
                 let mut r = self.rs.renderer.write();
                 match self.tex {

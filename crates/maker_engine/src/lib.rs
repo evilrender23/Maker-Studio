@@ -14,6 +14,7 @@ pub mod math;
 pub mod mesh;
 pub mod model;
 pub mod physics;
+pub mod postproceso;
 pub mod project;
 pub mod runtime;
 pub mod scene;

@@ -59,7 +59,8 @@ Pasadas por fotograma: sombras (profundidad desde el sol, con recorte alfa y
 piel) → cielo (triángulo a pantalla completa) → opacos y recortes agrupados por
 pipeline (PBR y sin luz → toon → plumilla) → contornos de casco invertido de
 los materiales toon y plumilla → transparentes de atrás adelante → contorno de
-selección → rejilla infinita del editor (con desvanecimiento).
+selección → rejilla infinita del editor (con desvanecimiento) → posprocesado
+(solo si la escena tiene efectos activos; ver [SHADERS.md](SHADERS.md)).
 
 Cada submalla glTF tiene su material: textura de color base (sRGB, mipmaps,
 trilineal + anisotropía ×16), factor, modo alfa (opaco, recorte con
@@ -69,7 +70,10 @@ sombreado. Las variantes (recorte, mezcla, piel, doble cara) son constantes
 `override` de WGSL y pipelines creados bajo demanda.
 Todo se dibuja en una textura fuera de pantalla `Rgba8UnormSrgb` (MSAA
 resuelto) que el editor registra en egui y el reproductor pinta a pantalla
-completa.
+completa. Con posprocesado, la escena va antes a un objetivo `Rgba16Float` y
+la cadena de efectos (`maker_render::postproceso`, objetivos creados solo al
+cambiar de tamaño) escribe esa misma textura sRGB; el sombreado global
+sustituye el material de cada objeto al rellenar su uniforme.
 
 Cada modelo de sombreado (`ShadingModel`) es un *entry point* de fragmento
 propio en `shaders.wgsl` (`fs_main`, `fs_toon`, `fs_hatch`), así el PBR no
@@ -84,7 +88,10 @@ del PBR. Detalles de cada modelo en [SHADERS.md](SHADERS.md).
 
 `crates/maker_render/src/renderer.rs` tiene tests que renderizan sin ventana y
 comprueban píxeles: la escena inicial en PBR y una escena con todos los
-modelos intercalados (agrupación por pipeline y color del contorno).
+modelos intercalados (agrupación por pipeline y color del contorno), la pila
+de posprocesado vacía (píxeles idénticos, cero pases), la cadena HDR frente al
+tonemap en la escena, todos los efectos integrados, los efectos WGSL propios
+(recarga, errores) y el sombreado global con excepciones.
 
 ## Tema
 

@@ -42,6 +42,8 @@ pub struct Runtime {
     entrada: Input,
     /// Escala del tiempo del juego (la cambian los scripts; 0 = pausa).
     pub time_scale: f32,
+    /// Último modo de cursor pedido por un script (`None`: el del proyecto).
+    pub cursor_mode: Option<maker_api::CursorMode>,
 }
 
 /// Estado que ven las funciones del host durante una llamada a un script.
@@ -53,6 +55,7 @@ struct HostCtx<'a> {
     time_scale: f32,
     destroyed: Vec<EntityId>,
     source: String,
+    cursor_mode: Option<maker_api::CursorMode>,
 }
 
 impl Runtime {
@@ -82,6 +85,7 @@ impl Runtime {
             ui,
             entrada: Input::default(),
             time_scale: 1.0,
+            cursor_mode: None,
         };
         let mut slots: Vec<(EntityId, Scripts)> = {
             let mut q = scene.world.query::<(&EntityId, &Scripts)>();
@@ -135,7 +139,7 @@ impl Runtime {
         self.ui.procesar_entrada(scene, input);
         let mut entrada = std::mem::take(&mut self.entrada);
         self.ui.filtrar(input, &mut entrada);
-        let mut ctx = HostCtx { scene, physics: &mut self.physics, input: &entrada, ui: &mut self.ui, time_scale: self.time_scale, destroyed: Vec::new(), source: String::new() };
+        let mut ctx = HostCtx { scene, physics: &mut self.physics, input: &entrada, ui: &mut self.ui, time_scale: self.time_scale, destroyed: Vec::new(), source: String::new(), cursor_mode: None };
         let api = host_api(&mut ctx);
         // Todo acceso posterior pasa por el mismo puntero que ven los scripts.
         let ctx = unsafe { &mut *(api.ctx as *mut HostCtx) };
@@ -217,6 +221,9 @@ impl Runtime {
             }
         }
         ctx.scene.update_transforms();
+        if let Some(m) = ctx.cursor_mode {
+            self.cursor_mode = Some(m);
+        }
         // Animación después de los scripts (que pueden cambiar de clip).
         self.animation.update(ctx.scene, self.project_root.as_deref(), dt, |_| true);
         let pantalla = [input.pantalla.x, input.pantalla.y];
@@ -289,6 +296,8 @@ fn host_api(ctx: &mut HostCtx) -> HostApi {
         set_shading: h_set_shading,
         play_animation: h_play_animation,
         set_animation_speed: h_set_animation_speed,
+        set_cursor_mode: h_set_cursor_mode,
+        set_global_shading: h_set_global_shading,
         ui_set_text: h_ui_set_text,
         ui_get_text: h_ui_get_text,
         ui_set_value: h_ui_set_value,
@@ -446,6 +455,17 @@ unsafe extern "C" fn h_set_color(c: *mut c_void, e: Entity, rgba: maker_api::Rgb
         m.material.base_color = [rgba.r, rgba.g, rgba.b, rgba.a];
     }
 }
+unsafe extern "C" fn h_set_global_shading(c: *mut c_void, code: u32) {
+    let c = unsafe { cx(c) };
+    if code == u32::MAX {
+        c.scene.env.global_shading.model = None;
+        return;
+    }
+    match ShadingModel::from_api(code) {
+        Some(m) => c.scene.env.global_shading.model = Some(m),
+        None => log::warn("script", format!("set_global_shading: modelo desconocido {code}")),
+    }
+}
 unsafe extern "C" fn h_set_shading(c: *mut c_void, e: Entity, code: u32) {
     let c = unsafe { cx(c) };
     let Some(model) = ShadingModel::from_api(code) else {
@@ -475,6 +495,14 @@ unsafe extern "C" fn h_set_animation_speed(c: *mut c_void, e: Entity, speed: f32
     let c = unsafe { cx(c) };
     if let Some(mut a) = c.scene.get_mut::<Animator>(id(e)) {
         a.speed = speed;
+    }
+}
+
+unsafe extern "C" fn h_set_cursor_mode(c: *mut c_void, code: u32) {
+    let c = unsafe { cx(c) };
+    match maker_api::CursorMode::from_u32(code) {
+        Some(m) => c.cursor_mode = Some(m),
+        None => log::warn("script", format!("set_cursor_mode: modo desconocido {code}")),
     }
 }
 
@@ -668,6 +696,14 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct GlobalToon;
+    impl Script for GlobalToon {
+        fn update(&mut self, ctx: &mut Ctx) {
+            ctx.set_global_shading(if ctx.frame == 0 { Some(Shading::Hatching) } else { None });
+        }
+    }
+
+    #[derive(Default)]
     struct Dancer;
     impl Script for Dancer {
         fn start(&mut self, ctx: &mut Ctx) {
@@ -714,7 +750,6 @@ mod tests {
         }
     }
 
-    maker_api::script_library!(TEST_LIB; Spinner, Spawner, Panicker, Toonify, Dancer, Hud);
 
     #[test]
     fn scripts_use_the_ui_through_abi_and_ui_consumes_clicks() {
@@ -758,6 +793,32 @@ mod tests {
         assert!(log::since(0).iter().any(|e| e.text.contains("juego_vio_clic=true")));
     }
 
+    #[derive(Default)]
+    struct MenuCursor;
+    impl Script for MenuCursor {
+        fn update(&mut self, ctx: &mut Ctx) {
+            ctx.set_cursor_mode(if ctx.frame == 0 { CursorMode::Libre } else { CursorMode::Bloqueado });
+        }
+    }
+
+    maker_api::script_library!(TEST_LIB; Spinner, Spawner, Panicker, Toonify, Dancer, MenuCursor, GlobalToon, Hud);
+
+    #[test]
+    fn scripts_request_cursor_mode() {
+        let lib = Arc::new(ScriptLib::from_static(&TEST_LIB).unwrap());
+        let mut s = Scene::starter();
+        let cube = s.find_by_name("Cubo").unwrap();
+        let mut rt = Runtime::start(&mut s, Some(lib.clone()));
+        rt.tick(&mut s, &Input::default(), 1.0 / 60.0);
+        assert_eq!(rt.cursor_mode, None, "sin scripts que lo pidan, manda el proyecto");
+        s.insert(cube, Scripts(vec![ScriptSlot { name: "MenuCursor".into(), enabled: true, ..Default::default() }]));
+        let mut rt = Runtime::start(&mut s, Some(lib));
+        rt.tick(&mut s, &Input::default(), 1.0 / 60.0);
+        assert_eq!(rt.cursor_mode, Some(CursorMode::Libre));
+        rt.tick(&mut s, &Input::default(), 1.0 / 60.0);
+        assert_eq!(rt.cursor_mode, Some(CursorMode::Bloqueado));
+    }
+
     #[test]
     fn scripts_drive_animator_through_abi() {
         let lib = Arc::new(ScriptLib::from_static(&TEST_LIB).unwrap());
@@ -784,6 +845,19 @@ mod tests {
         let mut rt = Runtime::start(&mut s, Some(lib));
         rt.tick(&mut s, &Input::default(), 1.0 / 60.0);
         assert_eq!(s.get::<MeshRenderer>(cube).unwrap().material.shading, ShadingModel::Toon);
+    }
+
+    #[test]
+    fn scripts_set_global_shading() {
+        let lib = Arc::new(ScriptLib::from_static(&TEST_LIB).unwrap());
+        let mut s = Scene::starter();
+        let cube = s.find_by_name("Cubo").unwrap();
+        s.insert(cube, Scripts(vec![ScriptSlot { name: "GlobalToon".into(), enabled: true, ..Default::default() }]));
+        let mut rt = Runtime::start(&mut s, Some(lib));
+        rt.tick(&mut s, &Input::default(), 1.0 / 60.0);
+        assert_eq!(s.env.global_shading.model, Some(ShadingModel::Hatching));
+        rt.tick(&mut s, &Input::default(), 1.0 / 60.0);
+        assert_eq!(s.env.global_shading.model, None);
     }
 
     #[test]

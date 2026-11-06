@@ -21,6 +21,13 @@ pub struct ProjectFile {
     /// Tema de interfaz del proyecto (nombre de un `.mtema`); vacío = aspecto neutro del motor.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub tema_ui: String,
+    /// Capturar el ratón al jugar (editor en Play y juego exportado).
+    #[serde(default = "si")]
+    pub capturar_raton: bool,
+}
+
+fn si() -> bool {
+    true
 }
 
 #[derive(Clone, Debug)]
@@ -112,7 +119,7 @@ impl Project {
         }
         let project = Project {
             root: root.canonicalize().unwrap_or(root.to_path_buf()),
-            file: ProjectFile { name: name.into(), main_scene: "scenes/main.mscene".into(), engine_version: env!("CARGO_PKG_VERSION").into(), tema_ui: String::new() },
+            file: ProjectFile { name: name.into(), main_scene: "scenes/main.mscene".into(), engine_version: env!("CARGO_PKG_VERSION").into(), capturar_raton: true, tema_ui: String::new() },
         };
         project.save()?;
         let crate_name = sanitize_crate_name(name);
@@ -128,6 +135,9 @@ impl Project {
         if demo {
             demo_ui(&mut project)?;
             library_scene().save(&project.root.join("scenes/biblioteca.mscene"))?;
+            for (name, src) in crate::postproceso::EXAMPLES {
+                write(&project.root.join(crate::postproceso::CUSTOM_DIR).join(name), src)?;
+            }
         }
         Ok(project)
     }
@@ -269,6 +279,14 @@ pub fn demo_scene() -> Scene {
     let mut slot = ScriptSlot { name: "CameraFollow".into(), enabled: true, ..Default::default() };
     slot.props.insert("offset".into(), PropVal::Vec3([0.0, 4.0, 8.0]));
     s.insert(cam, Scripts(vec![slot]));
+    // Posprocesado: bloom suave (el orbe brilla) y los dos efectos propios de
+    // ejemplo, apagados, para probarlos desde el Inspector.
+    use crate::postproceso::{Bloom, CustomEffect, PostEffect, PostKind};
+    s.env.post.push(PostEffect { intensity: 0.4, ..PostEffect::new(PostKind::Bloom(Bloom::default())) });
+    for (name, _) in crate::postproceso::EXAMPLES {
+        let path = format!("{}/{name}", crate::postproceso::CUSTOM_DIR);
+        s.env.post.push(PostEffect { enabled: false, ..PostEffect::new(PostKind::Custom(CustomEffect { path, ..Default::default() })) });
+    }
     demo_hud(&mut s);
     s.update_transforms();
     s
@@ -719,6 +737,8 @@ impl Script for Hud {
                 ctx.ui_set_visible(p, self.pausa);
             }
             ctx.set_time_scale(if self.pausa { 0.0 } else { 1.0 });
+            // El menú necesita el cursor libre; al volver, se captura otra vez.
+            ctx.set_cursor_mode(if self.pausa { CursorMode::Libre } else { CursorMode::Bloqueado });
         }
         // Cajas fuera de su sitio = puntos.
         let movidas = self.cajas.iter().filter(|(c, p0)| ctx.exists(*c) && (ctx.position_of(*c) - *p0).length() > 0.5).count() as u32;
@@ -796,6 +816,14 @@ mod tests {
     }
 
     #[test]
+    fn old_projects_capture_mouse_by_default() {
+        let f: ProjectFile = serde_json::from_str(r#"{"name":"Viejo","main_scene":"scenes/main.mscene"}"#).unwrap();
+        assert!(f.capturar_raton);
+        let f: ProjectFile = serde_json::from_str(r#"{"name":"M","main_scene":"s","capturar_raton":false}"#).unwrap();
+        assert!(!f.capturar_raton);
+    }
+
+    #[test]
     fn create_and_open_project() {
         let dir = std::env::temp_dir().join(format!("maker-proj-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -809,6 +837,10 @@ mod tests {
         let sphere = scene.find_by_name("Esfera").unwrap();
         assert_eq!(scene.get::<MeshRenderer>(sphere).unwrap().material.shading, ShadingModel::Hatching);
         assert_eq!(p2.scenes(), vec!["scenes/biblioteca.mscene".to_string(), "scenes/main.mscene".to_string()]);
+        // Los efectos propios de ejemplo existen y la escena los referencia.
+        let used = crate::postproceso::post_files_used([&scene.env]);
+        assert_eq!(used.len(), 2);
+        assert!(used.iter().all(|u| p2.root.join(u).is_file()), "{used:?}");
         // El escaparate usa la biblioteca integrada y un personaje animado.
         let lib = Scene::load(&p2.root.join("scenes/biblioteca.mscene")).unwrap();
         let hero = lib.find_by_name("Personaje").unwrap();

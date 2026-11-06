@@ -49,7 +49,13 @@ scripts de cada juego.
 - **Modelos de sombreado** por material: PBR, **toon / cel** al estilo de
   *Breath of the Wild* (bandas duras, sombra tintada, luz de borde, brillo en
   banda y contorno de casco invertido), sin luz y plumilla (rayado a tinta).
-  Ver [docs/SHADERS.md](docs/SHADERS.md).
+  **Sombreado global** para forzar un modelo en toda la escena, con
+  excepciones por objeto. Ver [docs/SHADERS.md](docs/SHADERS.md).
+- **Posprocesado** por escena: pila ordenada de efectos (tonemapping ACES/AgX,
+  corrección de color con LUT, bloom, viñeta, aberración cromática, grano,
+  retro, enfoque, FXAA, contorno en pantalla, niebla de altura, profundidad de
+  campo) y efectos WGSL propios en `shaders/post/` con parámetros en el
+  Inspector y recarga en caliente. Sin efectos no cuesta ningún pase.
 - **Scripting en Rust** (`maker_api`): cada proyecto tiene un crate `scripts/`
   que el editor compila (F7) y recarga en caliente; propiedades editables desde
   el Inspector; los pánicos se atrapan y salen en la consola. Ver
@@ -127,6 +133,11 @@ cargo build --release
 `maker-studio --help` lista las opciones para pruebas automáticas
 (`--screenshot`, `--play`, `--hold TECLA`, `--select`, `--export`…).
 
+Al jugar, en el editor y en `maker-player`, el ratón queda capturado dentro
+del juego: **Esc** lo suelta, un clic lo recaptura y **F11** alterna pantalla
+completa en el reproductor. Detalles y modos por script en
+[docs/SCRIPTING.md](docs/SCRIPTING.md#ratón).
+
 En el Hub, **Crear proyecto** con la plantilla **Demo jugable** genera una
 escena con un personaje físico (WASD, Espacio para saltar, F para lanzar
 bolas), una pila de cajas, una luz que flota, un anillo que gira y una cámara
@@ -144,6 +155,7 @@ que sigue al jugador. Pulsa **F7** para compilar sus scripts y **▶ Play**.
 | Ctrl al arrastrar un gizmo | ajuste (0,5 m · 15° · 0,1) |
 | F | encuadrar la selección |
 | F5 / Ctrl+P | Play / Stop |
+| Esc · Mayús+F1 (jugando) | soltar el ratón sin parar; clic en el juego para recapturarlo |
 | F7 | compilar y recargar scripts |
 | Ctrl+S · Ctrl+Z · Ctrl+Y · Ctrl+D · Supr · F2 | guardar · deshacer · rehacer · duplicar · eliminar · renombrar |
 

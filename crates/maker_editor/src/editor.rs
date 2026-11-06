@@ -141,9 +141,13 @@ pub struct Editor {
     pub gizmo: Gizmo,
     pub input: Input,
     pub game_focus: bool,
+    /// Captura del ratón durante Play.
+    pub cursor: maker_engine::CursorCapture,
     pub show_game_view: bool,
     pub show_grid: bool,
     pub shadows: bool,
+    /// Posprocesado en el visor (Play incluido).
+    pub post_fx: bool,
     pub bottom_tab: BottomTab,
     pub script: Option<OpenScript>,
     pub hierarchy_filter: String,
@@ -225,9 +229,11 @@ impl Editor {
             gizmo: Gizmo::default(),
             input: Input::default(),
             game_focus: false,
+            cursor: Default::default(),
             show_game_view: true,
             show_grid: true,
             shadows: true,
+            post_fx: true,
             bottom_tab: BottomTab::Content,
             script: None,
             hierarchy_filter: String::new(),
@@ -693,6 +699,7 @@ impl Editor {
         self.modo_ui = false;
         self.play = Some(PlaySession { runtime, snapshot, selection: self.selection });
         self.game_focus = true;
+        self.cursor.iniciar(self.project.file.capturar_raton, true);
         self.input.release_all();
         self.gizmo.cancel();
     }
@@ -703,6 +710,7 @@ impl Editor {
         self.scene = Scene::from_file(&p.snapshot);
         self.selection = p.selection.filter(|s| self.scene.contains(*s));
         self.game_focus = false;
+        self.cursor.parar();
         self.input.release_all();
         self.euler_cache = None;
         log::info("motor", "■ Stop: escena restaurada");
@@ -729,7 +737,10 @@ impl Editor {
 
     pub fn tick(&mut self, dt: f32) {
         match &mut self.play {
-            Some(p) => p.runtime.tick(&mut self.scene, &self.input, dt),
+            Some(p) => {
+                p.runtime.tick(&mut self.scene, &self.input, dt);
+                self.cursor.modo_script(p.runtime.cursor_mode, self.game_focus);
+            }
             // Fuera de Play solo avanza el Animator seleccionado (vista previa).
             None => {
                 let sel = self.selection;
@@ -988,6 +999,19 @@ impl Editor {
         let copied = maker_engine::biblioteca::export_used(&scenes, &extra, &out)?;
         if !copied.is_empty() {
             log::info("editor", format!("biblioteca: {} archivos copiados al juego", copied.len()));
+        }
+        // Efectos de posprocesado propios y LUT que usan las escenas.
+        for rel in maker_engine::postproceso::post_files_used(scenes.iter().map(|s| &s.environment)) {
+            let (src, dst) = (self.project.root.join(&rel), out.join(&rel));
+            if dst.exists() {
+                continue;
+            }
+            if !src.is_file() {
+                log::warn("editor", format!("posprocesado: falta {rel}"));
+                continue;
+            }
+            std::fs::create_dir_all(dst.parent().unwrap()).map_err(|e| e.to_string())?;
+            std::fs::copy(&src, &dst).map_err(|e| format!("{rel}: {e}"))?;
         }
         let lib = self.project.script_lib_path();
         if lib.exists() {

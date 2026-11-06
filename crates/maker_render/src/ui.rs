@@ -356,11 +356,8 @@ mod tests {
     use maker_engine::ui::estilo::{Relleno, Sombra};
     use maker_engine::ui::*;
 
-    fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
-    }
+    /// El mismo dispositivo y cerrojo que las demás pruebas de GPU (van de una en una).
+    use crate::renderer::tests::device;
 
     #[test]
     fn el_formato_de_quadui_coincide_con_el_sombreador() {
@@ -374,7 +371,7 @@ mod tests {
     /// barra a medias, un texto y una máscara; comprueba píxeles.
     #[test]
     fn renderiza_una_interfaz_sin_ventana() {
-        let Some((device, queue)) = device() else {
+        let Some((device, queue, _cerrojo)) = device() else {
             eprintln!("sin adaptador GPU: test omitido");
             return;
         };

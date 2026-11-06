@@ -223,6 +223,29 @@ pub enum Shading {
     Hatching = 3,
 }
 
+/// Modo del cursor mientras se juega (ver `Ctx::set_cursor_mode`).
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CursorMode {
+    /// Visible y libre: menús, inventarios.
+    Libre = 0,
+    /// Visible pero sin salir de la ventana.
+    Confinado = 1,
+    /// Oculto y fijo; solo llega el movimiento relativo (`mouse_delta`). Cámaras FPS.
+    Bloqueado = 2,
+}
+
+impl CursorMode {
+    pub fn from_u32(v: u32) -> Option<CursorMode> {
+        Some(match v {
+            0 => CursorMode::Libre,
+            1 => CursorMode::Confinado,
+            2 => CursorMode::Bloqueado,
+            _ => return None,
+        })
+    }
+}
+
 /// Opciones de `spawn`.
 pub mod spawn_flags {
     /// Añade cuerpo rígido dinámico y colisionador ajustado a la forma.
@@ -369,6 +392,11 @@ pub struct HostApi {
     /// si la entidad no tiene Animator.
     pub play_animation: unsafe extern "C" fn(*mut c_void, Entity, *const u8, usize, f32) -> bool,
     pub set_animation_speed: unsafe extern "C" fn(*mut c_void, Entity, f32),
+    /// Pide un modo de cursor (`CursorMode` como u32).
+    pub set_cursor_mode: unsafe extern "C" fn(*mut c_void, u32),
+    /// Sombreado global de la escena: código de `Shading` o `u32::MAX` para
+    /// que cada material use el suyo.
+    pub set_global_shading: unsafe extern "C" fn(*mut c_void, u32),
     // ── Interfaz (añadidas sin cambiar la ABI: las bibliotecas antiguas no las ven) ──
     pub ui_set_text: unsafe extern "C" fn(*mut c_void, Entity, *const u8, usize),
     /// Copia hasta `cap` bytes del texto en `buf` y devuelve su longitud total.
@@ -594,6 +622,11 @@ impl<'a> Ctx<'a> {
     pub fn set_shading(&mut self, e: Entity, shading: Shading) {
         unsafe { (self.api.set_shading)(self.api.ctx, e, shading as u32) }
     }
+    /// Fuerza un modelo de sombreado en todos los materiales de la escena
+    /// (salvo los marcados «Ignorar sombreado global»); `None` lo quita.
+    pub fn set_global_shading(&mut self, shading: Option<Shading>) {
+        unsafe { (self.api.set_global_shading)(self.api.ctx, shading.map_or(u32::MAX, |s| s as u32)) }
+    }
     /// Reproduce el clip `name` del Animator de `e`, fundiéndolo con el
     /// anterior durante `crossfade` segundos. Devuelve `false` si `e` no tiene
     /// Animator.
@@ -623,6 +656,11 @@ impl<'a> Ctx<'a> {
     }
     pub fn mouse_delta(&self) -> Vec2 {
         unsafe { (self.api.mouse_delta)(self.api.ctx) }
+    }
+    /// Pide un modo de cursor: `Libre` para menús, `Bloqueado` para cámaras
+    /// FPS. Esc siempre suelta el ratón; un clic en el juego lo recaptura.
+    pub fn set_cursor_mode(&mut self, mode: CursorMode) {
+        unsafe { (self.api.set_cursor_mode)(self.api.ctx, mode as u32) }
     }
     /// Eje -1..1 a partir de dos teclas.
     pub fn axis(&self, neg: Key, pos: Key) -> f32 {
@@ -990,7 +1028,7 @@ macro_rules! export_scripts {
 }
 
 pub mod prelude {
-    pub use crate::{Ctx, Entity, Key, MouseButton, Primitive, Props, Quat, RayHit, Script, Shading, UiPainter, UiRect, Vec2, Vec3, export_scripts, spawn_flags, ui_event};
+    pub use crate::{Ctx, CursorMode, Entity, Key, MouseButton, Primitive, Props, Quat, RayHit, Script, Shading, UiPainter, UiRect, Vec2, Vec3, export_scripts, spawn_flags, ui_event};
 }
 
 #[cfg(test)]

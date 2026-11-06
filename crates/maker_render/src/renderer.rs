@@ -23,6 +23,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
+use crate::postproceso::PostFx;
 use crate::texture;
 
 pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -131,6 +132,21 @@ struct PipeKey {
     pipe: Pipe,
     skinned: bool,
     double_sided: bool,
+    /// Salida HDR (posprocesado) en vez de sRGB.
+    hdr: bool,
+}
+
+/// Pipelines fijos (sin variantes de material); cada uno en sRGB y en HDR.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Fixed {
+    Ink { skinned: bool },
+    Outline { skinned: bool },
+    Sky,
+    Grid,
+}
+
+fn target_format(hdr: bool) -> wgpu::TextureFormat {
+    if hdr { crate::postproceso::HDR_FORMAT } else { COLOR_FORMAT }
 }
 
 /// Variante del mapa de sombras.
@@ -185,6 +201,8 @@ pub struct RenderOptions {
     pub show_grid: bool,
     pub selected: HashSet<EntityId>,
     pub shadows: bool,
+    /// Aplica la pila de posprocesado de la escena (las miniaturas no).
+    pub post: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -197,6 +215,8 @@ pub struct FrameStats {
     pub pipeline_switches: u32,
     /// Contornos de casco invertido dibujados.
     pub outlines: u32,
+    /// Pases de posprocesado (0 sin efectos: el tonemap va en la escena).
+    pub post_passes: u32,
 }
 
 struct GpuSub {
@@ -263,10 +283,10 @@ pub struct SceneRenderer {
     shadow_layout: wgpu::PipelineLayout,
     pipelines: HashMap<PipeKey, wgpu::RenderPipeline>,
     shadow_pipelines: HashMap<ShadowKey, wgpu::RenderPipeline>,
-    ink: [wgpu::RenderPipeline; 2],
-    outline: [wgpu::RenderPipeline; 2],
-    sky: wgpu::RenderPipeline,
-    grid: wgpu::RenderPipeline,
+    globals_only: wgpu::PipelineLayout,
+    fixed: HashMap<(Fixed, bool), wgpu::RenderPipeline>,
+    /// Posprocesado; se crea la primera vez que una escena lo usa.
+    post: Option<PostFx>,
     shadow_view: wgpu::TextureView,
     sampler: wgpu::Sampler,
     targets: Option<Targets>,
@@ -321,11 +341,12 @@ struct PipeDesc<'a> {
     depth_cmp: wgpu::CompareFunction,
     bias: wgpu::DepthBiasState,
     samples: u32,
+    format: wgpu::TextureFormat,
     color: Option<Option<wgpu::BlendState>>,
 }
 
 fn make_pipeline(device: &wgpu::Device, module: &wgpu::ShaderModule, d: PipeDesc) -> wgpu::RenderPipeline {
-    let targets = [d.color.map(|blend| wgpu::ColorTargetState { format: COLOR_FORMAT, blend, write_mask: wgpu::ColorWrites::ALL })];
+    let targets = [d.color.map(|blend| wgpu::ColorTargetState { format: d.format, blend, write_mask: wgpu::ColorWrites::ALL })];
     let targets: &[Option<wgpu::ColorTargetState>] = if d.color.is_some() { &targets } else { &[] };
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(d.label),
@@ -472,38 +493,6 @@ impl SceneRenderer {
             immediate_size: 0,
         });
 
-        let desc = |label, layout, vs, fs, buffers, cull, write, cmp, color| PipeDesc {
-            label,
-            layout,
-            vs,
-            fs,
-            constants: &[],
-            buffers,
-            cull,
-            depth_write: write,
-            depth_cmp: cmp,
-            bias: Default::default(),
-            samples: SAMPLES,
-            color,
-        };
-        // Casco invertido: posición del búfer de vértices normal + normales suavizadas (+ piel).
-        let ink_pos = wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<Vertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &INK_POS_ATTRS };
-        let ink_n = wgpu::VertexBufferLayout { array_stride: 12, step_mode: wgpu::VertexStepMode::Vertex, attributes: &INK_NORMAL_ATTRS };
-        let ink_static = [Some(ink_pos.clone()), Some(ink_n.clone())];
-        let ink_skinned = [Some(ink_pos), Some(ink_n), Some(skin_layout())];
-        let ink = [
-            make_pipeline(&device, &module, desc("ink outline", &main_layout, "vs_ink", Some("fs_ink"), &ink_static, Some(wgpu::Face::Front), true, wgpu::CompareFunction::Less, Some(None))),
-            make_pipeline(&device, &module, desc("ink outline skinned", &main_layout, "vs_ink_skinned", Some("fs_ink"), &ink_skinned, Some(wgpu::Face::Front), true, wgpu::CompareFunction::Less, Some(None))),
-        ];
-        let vb = [Some(vertex_layout())];
-        let vb_skin = [Some(vertex_layout()), Some(skin_layout())];
-        let outline = [
-            make_pipeline(&device, &module, desc("outline", &main_layout, "vs_outline", Some("fs_outline"), &vb, Some(wgpu::Face::Front), true, wgpu::CompareFunction::LessEqual, Some(None))),
-            make_pipeline(&device, &module, desc("outline skinned", &main_layout, "vs_outline_skinned", Some("fs_outline"), &vb_skin, Some(wgpu::Face::Front), true, wgpu::CompareFunction::LessEqual, Some(None))),
-        ];
-        let sky = make_pipeline(&device, &module, desc("sky", &globals_only, "vs_sky", Some("fs_sky"), &[], None, false, wgpu::CompareFunction::Always, Some(None)));
-        let grid = make_pipeline(&device, &module, desc("grid", &globals_only, "vs_grid", Some("fs_grid"), &[], None, false, wgpu::CompareFunction::LessEqual, Some(Some(wgpu::BlendState::ALPHA_BLENDING))));
-
         let white = Arc::new(Self::upload_texture(&device, &queue, "white", texture::build_mips(1, 1, vec![255; 4], None)));
         let mut r = Self {
             device,
@@ -524,10 +513,9 @@ impl SceneRenderer {
             shadow_layout,
             pipelines: HashMap::new(),
             shadow_pipelines: HashMap::new(),
-            ink,
-            outline,
-            sky,
-            grid,
+            globals_only,
+            fixed: HashMap::new(),
+            post: None,
             shadow_view,
             sampler,
             targets: None,
@@ -547,8 +535,9 @@ impl SceneRenderer {
         };
         // Los pipelines más comunes, ya listos para el primer fotograma.
         for pipe in [Pipe::Standard, Pipe::Toon] {
-            r.ensure_pipeline(PipeKey { alpha: Alpha::Opaque, pipe, skinned: false, double_sided: false });
+            r.ensure_pipeline(PipeKey { alpha: Alpha::Opaque, pipe, skinned: false, double_sided: false, hdr: false });
         }
+        r.ensure_fixed(Fixed::Sky, false);
         r.ensure_shadow_pipeline(ShadowKey { skinned: false, mask: false, double_sided: false });
         r
     }
@@ -603,10 +592,52 @@ impl SceneRenderer {
                 depth_cmp: wgpu::CompareFunction::Less,
                 bias: Default::default(),
                 samples: SAMPLES,
+                format: target_format(key.hdr),
                 color: Some(blend.then_some(wgpu::BlendState::ALPHA_BLENDING)),
             },
         );
         self.pipelines.insert(key, p);
+    }
+
+    fn ensure_fixed(&mut self, f: Fixed, hdr: bool) {
+        if self.fixed.contains_key(&(f, hdr)) {
+            return;
+        }
+        // Casco invertido: posición del búfer de vértices normal + normales suavizadas (+ piel).
+        let ink_pos = wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<Vertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &INK_POS_ATTRS };
+        let ink_n = wgpu::VertexBufferLayout { array_stride: 12, step_mode: wgpu::VertexStepMode::Vertex, attributes: &INK_NORMAL_ATTRS };
+        let ink_static = [Some(ink_pos.clone()), Some(ink_n.clone())];
+        let ink_skinned = [Some(ink_pos), Some(ink_n), Some(skin_layout())];
+        let vb = [Some(vertex_layout())];
+        let vb_skin = [Some(vertex_layout()), Some(skin_layout())];
+        let (label, layout, vs, fs, buffers, cull, write, cmp, blend): (_, _, _, _, &[Option<wgpu::VertexBufferLayout>], _, _, _, _) = match f {
+            Fixed::Ink { skinned: false } => ("ink outline", &self.main_layout, "vs_ink", "fs_ink", &ink_static, Some(wgpu::Face::Front), true, wgpu::CompareFunction::Less, None),
+            Fixed::Ink { skinned: true } => ("ink outline skinned", &self.main_layout, "vs_ink_skinned", "fs_ink", &ink_skinned, Some(wgpu::Face::Front), true, wgpu::CompareFunction::Less, None),
+            Fixed::Outline { skinned: false } => ("outline", &self.main_layout, "vs_outline", "fs_outline", &vb, Some(wgpu::Face::Front), true, wgpu::CompareFunction::LessEqual, None),
+            Fixed::Outline { skinned: true } => ("outline skinned", &self.main_layout, "vs_outline_skinned", "fs_outline", &vb_skin, Some(wgpu::Face::Front), true, wgpu::CompareFunction::LessEqual, None),
+            Fixed::Sky => ("sky", &self.globals_only, "vs_sky", "fs_sky", &[], None, false, wgpu::CompareFunction::Always, None),
+            Fixed::Grid => ("grid", &self.globals_only, "vs_grid", "fs_grid", &[], None, false, wgpu::CompareFunction::LessEqual, Some(wgpu::BlendState::ALPHA_BLENDING)),
+        };
+        let p = make_pipeline(
+            &self.device,
+            &self.module,
+            PipeDesc {
+                label,
+                layout,
+                vs,
+                fs: Some(fs),
+                constants: &[],
+                buffers,
+                cull,
+                depth_write: write,
+                depth_cmp: cmp,
+                bias: Default::default(),
+                samples: SAMPLES,
+                format: target_format(hdr),
+                color: Some(blend),
+            },
+        );
+        self.fixed.insert((f, hdr), p);
     }
 
     fn ensure_shadow_pipeline(&mut self, key: ShadowKey) {
@@ -630,6 +661,7 @@ impl SceneRenderer {
                 depth_cmp: wgpu::CompareFunction::LessEqual,
                 bias: wgpu::DepthBiasState { constant: 2, slope_scale: 2.0, clamp: 0.0 },
                 samples: 1,
+                format: COLOR_FORMAT,
                 color: None,
             },
         );
@@ -707,6 +739,12 @@ impl SceneRenderer {
         self.targets.as_ref().map(|t| t.size).unwrap_or((0, 0))
     }
 
+    /// Posprocesado (se crea la primera vez).
+    pub fn post_fx(&mut self) -> &mut PostFx {
+        let (d, q) = (&self.device, &self.queue);
+        self.post.get_or_insert_with(|| PostFx::new(d, q))
+    }
+
     /// Dispositivo y cola de la GPU (para crear otro renderizador que los comparta).
     pub fn gpu(&self) -> (&wgpu::Device, &wgpu::Queue) {
         (&self.device, &self.queue)
@@ -722,7 +760,8 @@ impl SceneRenderer {
             self.device.create_texture(&wgpu::TextureDescriptor { label: Some(label), size, mip_level_count: 1, sample_count: samples, dimension: wgpu::TextureDimension::D2, format, usage, view_formats: &[] })
         };
         let msaa = tex("msaa color", COLOR_FORMAT, SAMPLES, wgpu::TextureUsages::RENDER_ATTACHMENT).create_view(&Default::default());
-        let depth = tex("depth", DEPTH_FORMAT, SAMPLES, wgpu::TextureUsages::RENDER_ATTACHMENT).create_view(&Default::default());
+        // También se lee en el posprocesado (contorno, niebla, desenfoque, efectos propios).
+        let depth = tex("depth", DEPTH_FORMAT, SAMPLES, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING).create_view(&Default::default());
         let resolve = tex("scene output", COLOR_FORMAT, 1, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC);
         let resolve_view = resolve.create_view(&Default::default());
         self.targets = Some(Targets { size: (w, h), msaa, depth, resolve, resolve_view });
@@ -898,6 +937,16 @@ impl SceneRenderer {
         };
 
         let env = &scene.env;
+        // Posprocesado: sin efectos activos, el tonemap va en el shader de la
+        // escena y no hay pases extra (lo mismo que sin posprocesado).
+        let root = self.project_root.clone();
+        let plan = if opts.post && !env.post.is_empty() { Some(self.post_fx().plan(env, root.as_deref())) } else { None };
+        let hdr = plan.as_ref().is_some_and(|p| !p.steps.is_empty());
+        let (tonemap, exposure_ev) = match plan.as_ref().map(|p| p.scene_tonemap) {
+            Some(Some((op, ev))) => (op.code(), ev),
+            Some(None) => (3, 0.0),
+            None => (0, 0.0),
+        };
         let mut pts = [PointU::default(); MAX_POINTS];
         for (i, (_, p)) in points.iter().enumerate() {
             pts[i] = *p;
@@ -913,9 +962,9 @@ impl SceneRenderer {
             sky_horizon: v4(lin3(env.sky_horizon), 0.0),
             ground: v4(lin3(env.ground), env.ambient_intensity),
             fog: v4(lin3(env.fog_color), env.fog_density),
-            params: [points.len() as f32, env.exposure, 0.0, SHADOW_SIZE as f32],
+            params: [points.len() as f32, env.exposure * 2f32.powf(exposure_ev), 0.0, SHADOW_SIZE as f32],
             points: pts,
-            viewport: [w as f32, h as f32, 0.0, 0.0],
+            viewport: [w as f32, h as f32, tonemap as f32, 0.0],
         };
         self.queue.write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&globals));
         // El pase de sombras usa el mismo Globals con la matriz de la luz como cámara.
@@ -955,14 +1004,14 @@ impl SceneRenderer {
                     None => joints.extend(std::iter::repeat_n(Mat4::IDENTITY, model.joints as usize)),
                 }
             }
-            let mat = &mr.material;
+            let mat = &env.global_shading.apply(&mr.material);
             bytes.extend_from_slice(bytemuck::bytes_of(&object_uniform(&m, mat, skin_base)));
             bytes.resize((slot as usize + 1) * OBJ_STRIDE as usize, 0);
             let ink = mat.shading.has_outline() && mat.style.outline_width > 0.0;
             let depth = wb.center().distance_squared(view.eye);
             let selected = opts.selected.contains(id);
             for (si, s) in model.subs.iter().enumerate() {
-                let key = PipeKey { alpha: s.alpha, pipe: pipe_of(mat.shading), skinned: model.joints > 0, double_sided: s.double_sided };
+                let key = PipeKey { alpha: s.alpha, pipe: pipe_of(mat.shading), skinned: model.joints > 0, double_sided: s.double_sided, hdr };
                 draws.push(Draw {
                     model: mi,
                     sub: si,
@@ -990,9 +1039,19 @@ impl SceneRenderer {
                 }
             })
         });
+        self.ensure_fixed(Fixed::Sky, hdr);
+        if opts.show_grid {
+            self.ensure_fixed(Fixed::Grid, hdr);
+        }
         for d in &draws {
             if d.visible {
                 self.ensure_pipeline(d.key);
+                if d.ink {
+                    self.ensure_fixed(Fixed::Ink { skinned: d.key.skinned }, hdr);
+                }
+                if d.selected {
+                    self.ensure_fixed(Fixed::Outline { skinned: d.key.skinned }, hdr);
+                }
             }
             if d.shadow && shadows_on {
                 self.ensure_shadow_pipeline(ShadowKey { skinned: d.key.skinned, mask: d.key.alpha == Alpha::Mask, double_sided: d.key.double_sided });
@@ -1057,20 +1116,28 @@ impl SceneRenderer {
                 }
             }
         }
-        // Color.
+        // Color: directo a sRGB, o a HDR si hay efectos de posprocesado.
+        if hdr {
+            let (size, depth) = self.targets.as_ref().map(|t| (t.size, t.depth.clone())).unwrap();
+            self.post_fx().ensure_targets(size, SAMPLES, &depth);
+        }
         {
             let t = self.targets.as_ref().unwrap();
+            let (color, resolve) = match self.post.as_ref().filter(|_| hdr).and_then(|p| p.scene_attachment()) {
+                Some(a) => a,
+                None => (&t.msaa, &t.resolve_view),
+            };
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("main pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &t.msaa,
+                    view: color,
                     depth_slice: None,
-                    resolve_target: Some(&t.resolve_view),
+                    resolve_target: Some(resolve),
                     ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Discard },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &t.depth,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard }),
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: if hdr { wgpu::StoreOp::Store } else { wgpu::StoreOp::Discard } }),
                     stencil_ops: None,
                 }),
                 timestamp_writes: None,
@@ -1078,7 +1145,7 @@ impl SceneRenderer {
                 multiview_mask: None,
             });
             pass.set_bind_group(0, &self.globals_bg, &[]);
-            pass.set_pipeline(&self.sky);
+            pass.set_pipeline(&self.fixed[&(Fixed::Sky, hdr)]);
             pass.draw(0..3, 0..1);
             let mut bound: Option<PipeKey> = None;
             // Los transparentes van tras los contornos (que sí escriben profundidad).
@@ -1124,7 +1191,7 @@ impl SceneRenderer {
                     let m = &self.models[d.model];
                     let s = &m.subs[d.sub];
                     if ink_bound != Some(d.key.skinned) {
-                        pass.set_pipeline(&self.ink[d.key.skinned as usize]);
+                        pass.set_pipeline(&self.fixed[&(Fixed::Ink { skinned: d.key.skinned }, hdr)]);
                         ink_bound = Some(d.key.skinned);
                         stats.pipeline_switches += 1;
                     }
@@ -1150,7 +1217,7 @@ impl SceneRenderer {
                     let m = &self.models[d.model];
                     let s = &m.subs[d.sub];
                     if sel_bound != Some(d.key.skinned) {
-                        pass.set_pipeline(&self.outline[d.key.skinned as usize]);
+                        pass.set_pipeline(&self.fixed[&(Fixed::Outline { skinned: d.key.skinned }, hdr)]);
                         sel_bound = Some(d.key.skinned);
                     }
                     pass.set_bind_group(1, &self.object_bg, &[(d.slot as u64 * OBJ_STRIDE) as u32]);
@@ -1165,10 +1232,17 @@ impl SceneRenderer {
                 }
             }
             if opts.show_grid {
-                pass.set_pipeline(&self.grid);
+                pass.set_pipeline(&self.fixed[&(Fixed::Grid, hdr)]);
                 pass.set_bind_group(0, &self.globals_bg, &[]);
                 pass.draw(0..6, 0..1);
             }
+        }
+        // Posprocesado: de la escena HDR a la salida sRGB. (La interfaz del
+        // juego, si la hay, se dibuja después y no se posprocesa.)
+        stats.post_passes = 0;
+        if hdr && let (Some(plan), Some(post), Some(t)) = (plan.as_ref(), self.post.as_mut(), self.targets.as_ref()) {
+            post.run(&mut enc, &scene.env, plan, view, root.as_deref(), &t.resolve_view);
+            stats.post_passes = post.passes;
         }
         self.queue.submit(Some(enc.finish()));
         self.draws = draws;
@@ -1234,20 +1308,24 @@ fn outside_frustum(vp: &Mat4, b: &Aabb) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
+    /// Dispositivo para las pruebas. Devuelve también un cerrojo: las pruebas de GPU van de una
+    /// en una, porque en paralelo algunos drivers se quedan bloqueados.
+    pub(crate) fn device() -> Option<(wgpu::Device, wgpu::Queue, std::sync::MutexGuard<'static, ()>)> {
+        static GPU: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let cerrojo = GPU.lock().unwrap_or_else(|e| e.into_inner());
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok().map(|(d, q)| (d, q, cerrojo))
     }
 
     /// Renderiza la escena inicial sin ventana y comprueba que el cubo azul,
     /// el suelo y el cielo aparecen donde deben.
     #[test]
     fn renders_starter_scene_headless() {
-        let Some((device, queue)) = device() else {
+        let Some((device, queue, _gpu)) = device() else {
             eprintln!("sin adaptador GPU: test omitido");
             return;
         };
@@ -1274,11 +1352,220 @@ mod tests {
         assert_eq!(r.stats.outlines, 0);
     }
 
+    fn starter_view(scene: &Scene, w: u32, h: u32) -> RenderView {
+        let (cam_id, cam) = scene.primary_camera().unwrap();
+        RenderView::from_camera(scene.global(cam_id), &cam, w as f32 / h as f32)
+    }
+
+    fn render_px(r: &mut SceneRenderer, scene: &Scene, post: bool) -> Vec<u8> {
+        let view = starter_view(scene, 320, 180);
+        r.render(scene, &view, &RenderOptions { shadows: true, post, ..Default::default() });
+        r.read_pixels().unwrap().2
+    }
+
+    fn px_at(px: &[u8], x: u32, y: u32) -> [u8; 3] {
+        let i = ((y * 320 + x) * 4) as usize;
+        [px[i], px[i + 1], px[i + 2]]
+    }
+
+    fn max_diff(a: &[u8], b: &[u8]) -> u8 {
+        a.iter().zip(b).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0)
+    }
+
+    fn mean_diff(a: &[u8], b: &[u8]) -> f64 {
+        a.iter().zip(b).map(|(x, y)| x.abs_diff(*y) as f64).sum::<f64>() / a.len() as f64
+    }
+
+    /// Sin efectos (o con todos apagados) la imagen es idéntica a la de
+    /// siempre y no hay ningún pase extra.
+    #[test]
+    fn empty_post_stack_is_identical_and_free() {
+        use maker_engine::postproceso::*;
+        let Some((device, queue, _gpu)) = device() else { return };
+        let mut scene = Scene::starter();
+        let mut r = SceneRenderer::new(&device, &queue);
+        r.resize(320, 180);
+        let base = render_px(&mut r, &scene, false);
+        assert_eq!(render_px(&mut r, &scene, true), base);
+        assert_eq!(r.stats.post_passes, 0);
+        assert!(r.post.is_none(), "una pila vacía ni siquiera crea el posprocesado");
+        let mut off = PostEffect::new(PostKind::Vignette(Vignette::default()));
+        off.enabled = false;
+        scene.env.post = vec![off, PostEffect { intensity: 0.0, ..PostEffect::new(PostKind::Fxaa) }, PostEffect::new(PostKind::Tonemap(Tonemap::default()))];
+        assert_eq!(render_px(&mut r, &scene, true), base);
+        assert_eq!(r.stats.post_passes, 0);
+    }
+
+    /// Con un efecto HDR que no cambia nada (bloom con umbral inalcanzable),
+    /// la cadena HDR → tonemap da la misma imagen que el tonemap en la escena.
+    #[test]
+    fn hdr_chain_matches_direct_output() {
+        use maker_engine::postproceso::*;
+        let Some((device, queue, _gpu)) = device() else { return };
+        let mut scene = Scene::starter();
+        let mut r = SceneRenderer::new(&device, &queue);
+        r.resize(320, 180);
+        let base = render_px(&mut r, &scene, false);
+        scene.env.post = vec![PostEffect::new(PostKind::Bloom(Bloom { threshold: 1e6, radius: 0.0 }))];
+        let hdr = render_px(&mut r, &scene, true);
+        // umbral + mezcla + tonemap.
+        assert_eq!(r.stats.post_passes, 3);
+        // El MSAA se resuelve antes del tonemap: solo los bordes difieren algo.
+        assert!(mean_diff(&base, &hdr) < 0.5, "media {}", mean_diff(&base, &hdr));
+        let view = starter_view(&scene, 320, 180);
+        let cube = maker_engine::math::world_to_screen(view.view_proj(), Vec3::new(0.0, 0.5, 0.0), glam::Vec2::new(320.0, 180.0)).unwrap();
+        for (x, y) in [(160, 5), (cube.x as u32, cube.y as u32), (20, 170)] {
+            let (a, b) = (px_at(&base, x, y), px_at(&hdr, x, y));
+            assert!(a.iter().zip(b).all(|(p, q)| p.abs_diff(q) <= 1), "({x},{y}): {a:?} vs {b:?}");
+        }
+        // Mismo resultado con un tonemap explícito; AgX ya es distinto.
+        scene.env.post.push(PostEffect::new(PostKind::Tonemap(Tonemap::default())));
+        assert!(max_diff(&render_px(&mut r, &scene, true), &hdr) <= 1);
+        scene.env.post[1] = PostEffect::new(PostKind::Tonemap(Tonemap { op: Tonemapper::Agx, exposure_ev: 0.0 }));
+        assert!(mean_diff(&render_px(&mut r, &scene, true), &hdr) > 2.0);
+    }
+
+    /// Todos los efectos integrados compilan y se encadenan; los que
+    /// cambian la imagen la cambian donde deben.
+    #[test]
+    fn builtin_effects_run_and_change_the_image() {
+        use maker_engine::postproceso::*;
+        let Some((device, queue, _gpu)) = device() else { return };
+        let mut scene = Scene::starter();
+        let mut r = SceneRenderer::new(&device, &queue);
+        r.resize(320, 180);
+        let base = render_px(&mut r, &scene, false);
+        scene.env.post = PostKind::builtins().into_iter().map(PostEffect::new).collect();
+        let all = render_px(&mut r, &scene, true);
+        assert!(r.stats.post_passes >= 12, "{:?}", r.stats);
+        assert!(mean_diff(&base, &all) > 1.0);
+        // La viñeta oscurece las esquinas y deja el centro.
+        scene.env.post = vec![PostEffect::new(PostKind::Vignette(Vignette { radius: 0.4, softness: 0.3, color: [0.0; 3] }))];
+        let v = render_px(&mut r, &scene, true);
+        assert_eq!(r.stats.post_passes, 1, "solo efectos en 0..1: el tonemap va en la escena");
+        let lum = |p: [u8; 3]| p.iter().map(|&c| c as u32).sum::<u32>();
+        assert!(lum(px_at(&v, 2, 2)) + 60 < lum(px_at(&base, 2, 2)), "{:?} vs {:?}", px_at(&v, 2, 2), px_at(&base, 2, 2));
+        assert!(lum(px_at(&v, 160, 90)).abs_diff(lum(px_at(&base, 160, 90))) <= 3);
+        // El bloom ilumina alrededor de lo muy brillante.
+        let cube = scene.find_by_name("Cubo").unwrap();
+        let mut mr = scene.get::<MeshRenderer>(cube).unwrap();
+        mr.material.emissive = [1.0; 3];
+        mr.material.emissive_strength = 20.0;
+        scene.insert(cube, mr);
+        let lit = render_px(&mut r, &scene, false);
+        scene.env.post = vec![PostEffect { intensity: 1.0, ..PostEffect::new(PostKind::Bloom(Bloom::default())) }];
+        let bloom = render_px(&mut r, &scene, true);
+        assert!(mean_diff(&lit, &bloom) > 0.5, "{}", mean_diff(&lit, &bloom));
+    }
+
+    /// Efectos WGSL del proyecto: se aplican, un error se omite sin romper
+    /// nada (y se informa), y al arreglar el archivo se recompila.
+    #[test]
+    fn custom_effects_compile_reload_and_fail_safely() {
+        use maker_engine::postproceso::*;
+        let Some((device, queue, _gpu)) = device() else { return };
+        let root = std::env::temp_dir().join(format!("maker-post-render-{}", std::process::id()));
+        let dir = root.join(CUSTOM_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        let invert = "// @param fuerza float 1 0 1\n// @param tinte color 1 1 1\n@fragment\nfn efecto(in: PostIn) -> @location(0) vec4<f32> {\n    let c = muestra(in.uv).rgb;\n    return vec4<f32>(mix(c, (vec3<f32>(1.0) - c) * tinte(), fuerza() * post.intensidad), 1.0);\n}\n";
+        std::fs::write(dir.join("invertir.wgsl"), invert).unwrap();
+        for (name, src) in EXAMPLES {
+            std::fs::write(dir.join(name), src).unwrap();
+        }
+        std::fs::write(dir.join("plantilla.wgsl"), CUSTOM_TEMPLATE).unwrap();
+        let mut scene = Scene::starter();
+        let mut r = SceneRenderer::new(&device, &queue);
+        r.project_root = Some(root.clone());
+        r.resize(320, 180);
+        let base = render_px(&mut r, &scene, false);
+        for name in ["crt.wgsl", "tramado.wgsl", "plantilla.wgsl"] {
+            let path = format!("{CUSTOM_DIR}/{name}");
+            let info = r.post_fx().custom_info(&path, Some(&root));
+            assert!(info.error.is_none(), "{name}: {:?}", info.error);
+            assert!(!info.params.is_empty());
+            scene.env.post = vec![PostEffect::new(PostKind::Custom(CustomEffect { path, ..Default::default() }))];
+            let out = render_px(&mut r, &scene, true);
+            assert_eq!(r.stats.post_passes, 1, "{name}");
+            assert!(mean_diff(&base, &out) > 0.5, "{name} cambia la imagen");
+        }
+        let path = format!("{CUSTOM_DIR}/invertir.wgsl");
+        scene.env.post = vec![PostEffect::new(PostKind::Custom(CustomEffect { path: path.clone(), ..Default::default() }))];
+        let inv = render_px(&mut r, &scene, true);
+        let (a, b) = (px_at(&base, 160, 5), px_at(&inv, 160, 5));
+        let inv_srgb = |x: u8| {
+            let l = 1.0 - srgb_to_linear(x as f32 / 255.0);
+            let s = if l <= 0.003_130_8 { l * 12.92 } else { 1.055 * l.powf(1.0 / 2.4) - 0.055 };
+            (s * 255.0).round() as i32
+        };
+        assert!(a.iter().zip(b).all(|(x, y)| (inv_srgb(*x) - y as i32).abs() <= 3), "invertido en lineal: {a:?} → {b:?}");
+        // Valores del Inspector: fuerza 0 = sin cambio.
+        if let PostKind::Custom(c) = &mut scene.env.post[0].kind {
+            c.values.insert("fuerza".into(), [0.0; 4]);
+        }
+        assert!(max_diff(&render_px(&mut r, &scene, true), &base) <= 1);
+        // Roto: se omite (misma imagen que sin efectos) y el error dice la línea.
+        std::fs::write(dir.join("invertir.wgsl"), invert.replace("muestra(in.uv).rgb", "muestra(in.uv).rgbx")).unwrap();
+        r.post_fx().reload_custom(&path, Some(&root));
+        assert_eq!(render_px(&mut r, &scene, true), base);
+        assert_eq!(r.stats.post_passes, 0);
+        let err = r.post_fx().custom_info(&path, Some(&root)).error.unwrap().to_string();
+        assert!(err.contains("invertir.wgsl") && err.contains(":5:"), "{err}");
+        // Sin el entry point.
+        std::fs::write(dir.join("invertir.wgsl"), "fn otra() {}").unwrap();
+        r.post_fx().reload_custom(&path, Some(&root));
+        assert!(r.post_fx().custom_info(&path, Some(&root)).error.unwrap().contains("efecto"));
+        // Arreglado: vuelve a aplicarse.
+        std::fs::write(dir.join("invertir.wgsl"), invert).unwrap();
+        r.post_fx().reload_custom(&path, Some(&root));
+        scene.env.post[0] = PostEffect::new(PostKind::Custom(CustomEffect { path: path.clone(), ..Default::default() }));
+        assert!(max_diff(&render_px(&mut r, &scene, true), &inv) <= 1);
+        // Archivo que no existe: se omite.
+        scene.env.post[0] = PostEffect::new(PostKind::Custom(CustomEffect { path: "shaders/post/no.wgsl".into(), ..Default::default() }));
+        assert_eq!(render_px(&mut r, &scene, true), base);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// El sombreado global cambia el modelo de todo salvo de las excepciones.
+    #[test]
+    fn global_shading_overrides_materials() {
+        let Some((device, queue, _gpu)) = device() else { return };
+        let mut scene = Scene::starter();
+        let mut r = SceneRenderer::new(&device, &queue);
+        r.resize(320, 180);
+        let base = render_px(&mut r, &scene, false);
+        assert_eq!(r.stats.pipeline_switches, 1);
+        scene.env.global_shading.model = Some(ShadingModel::Toon);
+        scene.env.global_shading.style.outline_width = 0.0;
+        let toon = render_px(&mut r, &scene, false);
+        assert_eq!((r.stats.pipeline_switches, r.stats.outlines), (1, 0), "todo toon: {:?}", r.stats);
+        assert!(mean_diff(&base, &toon) > 1.0);
+        // El contorno global se dibuja en todos.
+        scene.env.global_shading.style.outline_width = 3.0;
+        render_px(&mut r, &scene, false);
+        assert_eq!(r.stats.outlines, 2, "{:?}", r.stats);
+        // Excepción: el cubo conserva su PBR.
+        let cube = scene.find_by_name("Cubo").unwrap();
+        let mut mr = scene.get::<MeshRenderer>(cube).unwrap();
+        mr.material.ignore_global = true;
+        scene.insert(cube, mr);
+        scene.env.global_shading.style.outline_width = 0.0;
+        render_px(&mut r, &scene, false);
+        assert_eq!(r.stats.pipeline_switches, 2, "PBR + toon: {:?}", r.stats);
+        // Conserva el color: el cubo sigue azul en toon.
+        let mr = scene.get::<MeshRenderer>(cube).unwrap();
+        scene.insert(cube, MeshRenderer { material: Material { ignore_global: false, ..mr.material }, ..mr });
+        let px = render_px(&mut r, &scene, false);
+        let view = starter_view(&scene, 320, 180);
+        let c = maker_engine::math::world_to_screen(view.view_proj(), Vec3::new(0.0, 0.5, 0.0), glam::Vec2::new(320.0, 180.0)).unwrap();
+        let c = px_at(&px, c.x as u32, c.y as u32);
+        assert!(c[2] > c[0] + 40, "azul en toon: {c:?}");
+    }
+
     /// Todos los modelos de sombreado compilan y se dibujan; los dibujos se
     /// agrupan por pipeline y el contorno toon sale con su color.
     #[test]
     fn renders_stylized_models_grouped_by_pipeline() {
-        let Some((device, queue)) = device() else {
+        let Some((device, queue, _gpu)) = device() else {
             eprintln!("sin adaptador GPU: test omitido");
             return;
         };

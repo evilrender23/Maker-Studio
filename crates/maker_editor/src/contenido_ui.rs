@@ -374,6 +374,17 @@ fn barra(ed: &mut Editor, ui: &mut Ui) {
                 ui.close();
             }
         });
+        ui.menu_button("Nuevo efecto", |ui| {
+            ui.label("Nombre del archivo:");
+            let r = ui.text_edit_singleline(&mut ed.new_script_name);
+            if (ui.button("Crear").clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))) && !ed.new_script_name.trim().is_empty() {
+                let n = std::mem::take(&mut ed.new_script_name);
+                ed.create_post_effect(&n);
+                ui.close();
+            }
+        })
+        .response
+        .on_hover_text(format!("Efecto de posprocesado WGSL en {}", maker_engine::postproceso::CUSTOM_DIR));
         ui.menu_button("Importar modelo", |ui| {
             ui.label("Ruta de un .gltf / .glb:");
             ui.add(egui::TextEdit::singleline(&mut ed.import_path).desired_width(320.0));

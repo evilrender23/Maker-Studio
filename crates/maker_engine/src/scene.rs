@@ -9,8 +9,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
-/// Cielo, luz ambiente, niebla, exposición y gravedad.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+/// Cielo, luz ambiente, niebla, exposición, gravedad, sombreado global y
+/// posprocesado. Los campos que faltan en escenas antiguas toman su valor por
+/// defecto.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Environment {
     pub sky_top: [f32; 3],
     pub sky_horizon: [f32; 3],
@@ -20,6 +23,11 @@ pub struct Environment {
     pub fog_density: f32,
     pub exposure: f32,
     pub gravity: [f32; 3],
+    /// Modelo de sombreado forzado en todos los materiales.
+    pub global_shading: crate::postproceso::GlobalShading,
+    /// Pila ordenada de efectos de posprocesado.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub post: Vec<crate::postproceso::PostEffect>,
 }
 
 impl Default for Environment {
@@ -33,6 +41,8 @@ impl Default for Environment {
             fog_density: 0.004,
             exposure: 1.0,
             gravity: [0.0, -9.81, 0.0],
+            global_shading: Default::default(),
+            post: Vec::new(),
         }
     }
 }
@@ -492,12 +502,12 @@ impl Scene {
     pub fn to_file(&self) -> SceneFile {
         let h = self.hierarchy();
         let entities = h.depth_first().into_iter().filter_map(|(id, _)| self.record(id)).collect();
-        SceneFile { format: "maker-scene".into(), version: 1, environment: self.env, entities }
+        SceneFile { format: "maker-scene".into(), version: 1, environment: self.env.clone(), entities }
     }
 
     pub fn from_file(f: &SceneFile) -> Scene {
         let mut s = Scene::new();
-        s.env = f.environment;
+        s.env = f.environment.clone();
         for r in &f.entities {
             if !s.contains(r.id) {
                 s.spawn_record(r);

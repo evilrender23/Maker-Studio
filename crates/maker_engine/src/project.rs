@@ -60,7 +60,59 @@ pub fn maker_api_path() -> PathBuf {
         return PathBuf::from(p);
     }
     let compiled = Path::new(env!("CARGO_MANIFEST_DIR")).join("../maker_api");
-    compiled.canonicalize().unwrap_or(compiled)
+    crate::rutas::canonicalizar(&compiled)
+}
+
+/// `maker_api_path()` escrita como la quiere cargo en un `Cargo.toml` (barras normales,
+/// sin el prefijo `\\?\` de Windows).
+pub fn maker_api_toml() -> String {
+    crate::rutas::sin_verbatim(maker_api_path()).to_string_lossy().replace('\\', "/")
+}
+
+/// Corrige la ruta de `maker_api` en el `Cargo.toml` de los scripts si cargo no puede usarla:
+/// rutas `//?/C:/…` (escritas por versiones anteriores en Windows) o que ya no existen (el
+/// motor se movió o se reinstaló en otro sitio). Devuelve `Ok(true)` si reescribió el archivo.
+pub fn reparar_manifest_scripts(manifest: &Path) -> Result<bool, String> {
+    let Ok(txt) = std::fs::read_to_string(manifest) else { return Ok(false) };
+    let api = maker_api_toml();
+    let Some(nuevo) = reparar_ruta_api(&txt, &api, |r| Path::new(r).join("Cargo.toml").is_file()) else {
+        return Ok(false);
+    };
+    std::fs::write(manifest, nuevo).map_err(|e| format!("{}: {e}", manifest.display()))?;
+    Ok(true)
+}
+
+/// Reescribe la línea `maker_api = { path = "…" }` si su ruta es «verbatim» de Windows o no
+/// existe (según `existe`) y la ruta nueva sí. `None` si no hay nada que cambiar.
+fn reparar_ruta_api(txt: &str, api: &str, existe: impl Fn(&str) -> bool) -> Option<String> {
+    let mut cambiado = false;
+    let mut out = String::with_capacity(txt.len() + 16);
+    for linea in txt.split_inclusive('\n') {
+        if let Some(nueva) = reparar_linea_api(linea, api, &existe) {
+            out.push_str(&nueva);
+            cambiado = true;
+        } else {
+            out.push_str(linea);
+        }
+    }
+    cambiado.then_some(out)
+}
+
+fn reparar_linea_api(linea: &str, api: &str, existe: &impl Fn(&str) -> bool) -> Option<String> {
+    let l = linea.trim_start();
+    if !l.strip_prefix("maker_api")?.trim_start().starts_with('=') {
+        return None;
+    }
+    let ini = linea.find("path")? + 4;
+    let v = linea[ini..].trim_start().strip_prefix('=')?.trim_start().strip_prefix('"')?;
+    let fin = v.find('"')?;
+    let ruta = &v[..fin];
+    let verbatim = ruta.starts_with("//?/") || ruta.starts_with(r"\\?\");
+    if !(verbatim || !existe(ruta)) || ruta == api || !existe(api) {
+        return None;
+    }
+    let pos = linea.len() - v.len();
+    Some(format!("{}{api}{}", &linea[..pos], &v[fin..]))
 }
 
 pub fn sanitize_crate_name(name: &str) -> String {
@@ -85,7 +137,7 @@ impl Project {
         let txt = std::fs::read_to_string(&pf).map_err(|e| format!("{}: {e}", pf.display()))?;
         let mut file: ProjectFile = serde_json::from_str(&txt).map_err(|e| format!("{}: {e}", pf.display()))?;
         file.normalizar();
-        Ok(Project { root: root.canonicalize().unwrap_or(root.to_path_buf()), file })
+        Ok(Project { root: crate::rutas::canonicalizar(root), file })
     }
 
     pub fn save(&self) -> Result<(), String> {
@@ -149,7 +201,7 @@ impl Project {
             std::fs::create_dir_all(root.join(d)).map_err(|e| format!("{}: {e}", root.join(d).display()))?;
         }
         let project = Project {
-            root: root.canonicalize().unwrap_or(root.to_path_buf()),
+            root: crate::rutas::canonicalizar(root),
             file: ProjectFile {
                 name: name.into(),
                 main_scene: "scenes/main.mscene".into(),
@@ -163,7 +215,7 @@ impl Project {
         project.file.normalizar();
         project.save()?;
         let crate_name = sanitize_crate_name(name);
-        let api = maker_api_path().to_string_lossy().replace('\\', "/");
+        let api = maker_api_toml();
         let cargo = SCRIPTS_CARGO_TOML.replace("{name}", &crate_name).replace("{api}", &api);
         write(&project.scripts_manifest(), &cargo)?;
         write(&project.scripts_dir().join("src/lib.rs"), SCRIPTS_LIB_RS)?;
@@ -187,6 +239,11 @@ impl Project {
     /// Lanza `cargo build --release` de los scripts. Devuelve el proceso para
     /// leer su salida (el editor la vuelca a la consola).
     pub fn spawn_script_build(&self) -> Result<std::process::Child, String> {
+        match reparar_manifest_scripts(&self.scripts_manifest()) {
+            Ok(true) => crate::log::info("scripts", format!("ruta de maker_api corregida en scripts/Cargo.toml: {}", maker_api_toml())),
+            Ok(false) => {}
+            Err(e) => crate::log::warn("scripts", format!("no se pudo corregir scripts/Cargo.toml: {e}")),
+        }
         let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
         Command::new(cargo)
             .args(["build", "--release", "--color", "never", "--message-format", "short", "--manifest-path"])
@@ -879,6 +936,29 @@ export_scripts!(Rotator, Bobber, PlayerController, CameraFollow, Paseante, Hud, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repara_la_ruta_verbatim_de_maker_api() {
+        let txt = "[dependencies]\nmaker_api = { path = \"//?/C:/Users/ozx/AppData/Local/MakerStudio/codigo/crates/maker_api\" }\n\n[workspace]\n";
+        let api = "C:/Users/ozx/AppData/Local/MakerStudio/codigo/crates/maker_api";
+        let existe = |r: &str| r == api;
+        let nuevo = reparar_ruta_api(txt, api, existe).expect("debe reparar");
+        assert_eq!(nuevo, format!("[dependencies]\nmaker_api = {{ path = \"{api}\" }}\n\n[workspace]\n"));
+        // Ya correcta: no se toca.
+        assert!(reparar_ruta_api(&nuevo, api, existe).is_none());
+        // Ruta que existe y no es verbatim (la eligió el usuario): no se toca.
+        let propia = "maker_api = { path = \"D:/mio/maker_api\" }\r\n";
+        assert!(reparar_ruta_api(propia, api, |_| true).is_none());
+        // Ruta antigua que ya no existe: se cambia, conservando CRLF.
+        assert_eq!(reparar_ruta_api(propia, api, existe).unwrap(), format!("maker_api = {{ path = \"{api}\" }}\r\n"));
+        // Si la nueva tampoco existe, mejor no tocar nada.
+        assert!(reparar_ruta_api(txt, api, |_| false).is_none());
+    }
+
+    #[test]
+    fn el_cargo_toml_nuevo_no_lleva_rutas_verbatim() {
+        assert!(!maker_api_toml().contains('?'), "{}", maker_api_toml());
+    }
 
     #[test]
     fn crate_names_are_valid() {

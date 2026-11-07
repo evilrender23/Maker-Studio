@@ -54,14 +54,14 @@ pub fn find_library_dir(env: Option<PathBuf>, exe_dir: Option<&Path>, compiled: 
         }
     }
     candidates.push(compiled.to_path_buf());
-    candidates.into_iter().find(|c| c.is_dir()).map(|c| c.canonicalize().unwrap_or(c))
+    candidates.into_iter().find(|c| c.is_dir()).map(|c| crate::rutas::canonicalizar(&c))
 }
 
 /// Carpeta de la biblioteca de este proceso (se busca una vez).
 pub fn library_dir() -> Option<PathBuf> {
     static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
     DIR.get_or_init(|| {
-        let exe_dir = std::env::current_exe().ok().and_then(|e| e.canonicalize().ok()).and_then(|e| e.parent().map(Path::to_path_buf));
+        let exe_dir = std::env::current_exe().ok().and_then(|e| crate::rutas::canonicalizar_estricto(&e).ok()).and_then(|e| e.parent().map(Path::to_path_buf));
         find_library_dir(std::env::var_os(ENV_VAR).map(PathBuf::from), exe_dir.as_deref(), &compiled_dir())
     })
     .clone()

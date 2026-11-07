@@ -20,6 +20,7 @@ pub mod normal_gen;
 pub mod physics;
 pub mod postproceso;
 pub mod project;
+pub mod rutas;
 pub mod runtime;
 pub mod scene;
 pub mod scripting;

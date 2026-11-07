@@ -256,7 +256,7 @@ fn main() -> eframe::Result<()> {
         }
     };
     // Sin --scene arranca en la primera escena activa del orden de escenas.
-    let scene_path = scene_path.map(|p| p.canonicalize().unwrap_or(p)).unwrap_or_else(|| project.main_scene_path());
+    let scene_path = scene_path.map(|p| maker_engine::rutas::canonicalizar(&p)).unwrap_or_else(|| project.main_scene_path());
     let mut scene = match Scene::load(&scene_path) {
         Ok(s) => s,
         Err(e) => {

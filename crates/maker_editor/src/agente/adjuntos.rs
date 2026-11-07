@@ -29,10 +29,10 @@ pub fn normalizar(texto: &str, raiz: &Path) -> Option<PathBuf> {
 
 /// Carpetas que la CLI necesita además del proyecto para leer los adjuntos.
 pub fn carpetas_extra(adjuntos: &[PathBuf], raiz: &Path) -> Vec<PathBuf> {
-    let raiz = raiz.canonicalize().unwrap_or_else(|_| raiz.to_path_buf());
+    let raiz = maker_engine::rutas::canonicalizar(raiz);
     let mut v: Vec<PathBuf> = Vec::new();
     for a in adjuntos {
-        let a = a.canonicalize().unwrap_or_else(|_| a.clone());
+        let a = maker_engine::rutas::canonicalizar(a);
         if a.starts_with(&raiz) {
             continue;
         }
@@ -176,7 +176,7 @@ mod tests {
         assert_eq!(normalizar(&format!("file://{}", fuera.display()), &raiz), Some(fuera.clone()));
         assert_eq!(normalizar("no/existe.txt", &raiz), None);
         let extra = carpetas_extra(&[raiz.join("scripts/a.rs"), fuera.clone()], &raiz);
-        assert_eq!(extra, vec![fuera.parent().unwrap().canonicalize().unwrap()]);
+        assert_eq!(extra, vec![maker_engine::rutas::canonicalizar(fuera.parent().unwrap())]);
         let b = bloque(&[raiz.join("scripts/a.rs"), fuera.clone()], &raiz);
         assert!(b.contains("- scripts/a.rs\n") && b.contains("(imagen)"));
         let _ = std::fs::remove_dir_all(&raiz);

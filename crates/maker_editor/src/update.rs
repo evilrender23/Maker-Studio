@@ -159,7 +159,7 @@ fn git(carpeta: &Path, argumentos: &[&str]) -> Result<String, String> {
 
 /// `<destino>/app`, donde está este ejecutable.
 fn carpeta_app() -> Option<PathBuf> {
-    std::env::current_exe().ok()?.canonicalize().ok()?.parent().map(Path::to_path_buf)
+    maker_engine::rutas::canonicalizar_estricto(&std::env::current_exe().ok()?).ok()?.parent().map(Path::to_path_buf)
 }
 
 /// La versión instalada, o `None` en una compilación de desarrollo.
